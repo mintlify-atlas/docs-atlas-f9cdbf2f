@@ -1,0 +1,115 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "QIMEM",
+  "projectDescription": "Deterministic encryption and key lifecycle engine with envelope encryption, HTTP API, and CLI tools.",
+  "theme": "aspen",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4f46e5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/envelope-format",
+              "architecture/key-lifecycle",
+              "architecture/security"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/configuration",
+              "deployment/stateful-mode",
+              "deployment/production"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/monitoring",
+              "operations/key-rotation",
+              "operations/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "HTTP API",
+            "pages": [
+              "api/overview",
+              "api/keys",
+              "api/encrypt",
+              "api/decrypt",
+              "api/rotate"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "cli/overview",
+              "cli/commands"
+            ]
+          },
+          {
+            "group": "Library API",
+            "pages": [
+              "library/crypto-engine",
+              "library/envelope",
+              "library/keystore",
+              "library/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Deterministic envelope encryption with AES-256-GCM",
+    "Versioned key lifecycle management with rotation support",
+    "HTTP API for encryption operations",
+    "CLI tools for key generation and data encryption",
+    "In-memory and PostgreSQL key storage backends",
+    "Production-grade security with zeroize and structured error handling",
+    "Docker and Docker Compose deployment support"
+  ],
+  "publicApiSurface": [
+    "POST /keys - Create encryption key",
+    "POST /encrypt - Encrypt data",
+    "POST /decrypt - Decrypt envelope",
+    "POST /rotate - Rotate key",
+    "GET /health - Health check",
+    "qimem keygen - Generate key via CLI",
+    "qimem encrypt - Encrypt via CLI",
+    "qimem decrypt - Decrypt via CLI",
+    "qimem rotate - Rotate key via CLI",
+    "CryptoEngine::new(algorithm)",
+    "CryptoEngine::encrypt(key, plaintext)",
+    "CryptoEngine::decrypt(key, envelope)",
+    "Envelope::serialize_binary()",
+    "Envelope::deserialize_binary(bytes)",
+    "Envelope::serialize_json()",
+    "Envelope::deserialize_json(bytes)",
+    "KeyStore::create_key()",
+    "KeyStore::get_key(key_id)",
+    "KeyStore::rotate_key(key_id)",
+    "InMemoryKeyStore",
+    "PostgresKeyStore"
+  ]
+}
