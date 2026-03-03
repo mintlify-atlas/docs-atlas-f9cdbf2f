@@ -1,0 +1,420 @@
+---
+title: Error Handling
+description: QimemError types and Result alias
+---
+
+## Overview
+
+QIMEM uses a single error enum `QimemError` for all error conditions. All fallible operations return `Result<T>`, which is a type alias for `std::result::Result<T, QimemError>`.
+
+## Result Type
+
+```rust
+pub type Result<T> = std::result::Result<T, QimemError>;
+```
+
+All public QIMEM APIs return `Result<T>` rather than raw `Result<T, QimemError>` for convenience.
+
+## QimemError Enum
+
+```rust
+#[derive(Debug, Error)]
+pub enum QimemError {
+    #[error("unsupported envelope version: {0}")]
+    UnsupportedVersion(u8),
+    
+    #[error("unsupported algorithm id: {0}")]
+    UnsupportedAlgorithm(u8),
+    
+    #[error("invalid envelope: {0}")]
+    InvalidEnvelope(&'static str),
+    
+    #[error("key not found: {0}")]
+    KeyNotFound(uuid::Uuid),
+    
+    #[error("key is inactive: {0}")]
+    KeyInactive(uuid::Uuid),
+    
+    #[error("encryption failed")]
+    Encryption,
+    
+    #[error("decryption failed")]
+    Decryption,
+    
+    #[error("serialization failed: {0}")]
+    Serialization(String),
+    
+    #[error("configuration failed: {0}")]
+    Config(String),
+    
+    #[cfg(feature = "stateful")]
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+```
+
+## Error Variants
+
+### UnsupportedVersion
+
+Returned when an envelope has an unknown version number.
+
+```rust
+UnsupportedVersion(u8)
+```
+
+<ParamField path="0" type="u8">
+  The unsupported version number encountered.
+</ParamField>
+
+**Caused by:**
+- Attempting to serialize or deserialize an envelope with `version != 1`
+- Receiving an envelope created by a future version of QIMEM
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, Envelope, QimemError};
+
+let env = Envelope {
+    version: 99,
+    algorithm: Algorithm::Aes256Gcm,
+    key_id: uuid::Uuid::new_v4(),
+    nonce: vec![0; 12],
+    ciphertext: vec![1, 2, 3],
+    tag: vec![0; 16],
+};
+
+let err = env.serialize_binary().expect_err("should fail");
+match err {
+    QimemError::UnsupportedVersion(v) => println!("Unsupported version: {}", v),
+    _ => panic!("unexpected error"),
+}
+```
+
+### UnsupportedAlgorithm
+
+Returned when deserializing an envelope with an unknown algorithm ID.
+
+```rust
+UnsupportedAlgorithm(u8)
+```
+
+<ParamField path="0" type="u8">
+  The unsupported algorithm ID encountered.
+</ParamField>
+
+**Caused by:**
+- Deserializing a binary envelope with an unknown algorithm byte
+- Receiving an envelope using an algorithm not enabled in your build (e.g., ChaCha20 without the `chacha` feature)
+
+### InvalidEnvelope
+
+Returned when an envelope structure is malformed.
+
+```rust
+InvalidEnvelope(&'static str)
+```
+
+<ParamField path="0" type="&'static str">
+  A description of what is invalid about the envelope.
+</ParamField>
+
+**Caused by:**
+- Corrupted binary envelope data
+- Missing required fields during deserialization
+- Trailing bytes after a valid envelope
+- Algorithm mismatch between engine and envelope
+- Fields exceeding maximum lengths
+
+**Common messages:**
+- `"missing version"`
+- `"missing algorithm"`
+- `"missing key id"`
+- `"invalid nonce"`
+- `"invalid ciphertext"`
+- `"invalid tag"`
+- `"trailing bytes"`
+- `"algorithm mismatch"`
+- `"nonce too long"`
+- `"ciphertext too long"`
+- `"tag too long"`
+
+**Example:**
+
+```rust
+use qimem::{Envelope, QimemError};
+
+let malformed = vec![1, 2, 3]; // Not a valid envelope
+let err = Envelope::deserialize_binary(&malformed).expect_err("should fail");
+
+match err {
+    QimemError::InvalidEnvelope(msg) => println!("Invalid: {}", msg),
+    _ => panic!("unexpected error"),
+}
+```
+
+### KeyNotFound
+
+Returned when attempting to retrieve a non-existent key.
+
+```rust
+KeyNotFound(uuid::Uuid)
+```
+
+<ParamField path="0" type="Uuid">
+  The UUID of the key that was not found.
+</ParamField>
+
+**Caused by:**
+- Calling `get_key()` with an invalid or deleted key ID
+- Calling `rotate_key()` with a non-existent key ID
+
+**Example:**
+
+```rust
+use qimem::{InMemoryKeyStore, KeyStore, QimemError};
+use uuid::Uuid;
+
+let store = InMemoryKeyStore::default();
+let random_id = Uuid::new_v4();
+
+let err = store.get_key(random_id).expect_err("should fail");
+match err {
+    QimemError::KeyNotFound(id) => println!("Key {} not found", id),
+    _ => panic!("unexpected error"),
+}
+```
+
+### KeyInactive
+
+Returned when attempting to encrypt with an inactive key.
+
+```rust
+KeyInactive(uuid::Uuid)
+```
+
+<ParamField path="0" type="Uuid">
+  The UUID of the inactive key.
+</ParamField>
+
+**Caused by:**
+- Calling `CryptoEngine::encrypt()` with a key that has been rotated (marked inactive)
+- Using key material where `active == false`
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore, QimemError};
+
+let store = InMemoryKeyStore::default();
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+
+let key_meta = store.create_key().expect("create");
+let rotated_meta = store.rotate_key(key_meta.key_id).expect("rotate");
+
+// Old key is now inactive
+let old_key = store.get_key(key_meta.key_id).expect("get old key");
+
+let err = engine.encrypt(&old_key, b"data").expect_err("should fail");
+match err {
+    QimemError::KeyInactive(id) => println!("Key {} is inactive", id),
+    _ => panic!("unexpected error"),
+}
+```
+
+### Encryption
+
+Returned when the encryption operation fails.
+
+```rust
+Encryption
+```
+
+**Caused by:**
+- Internal cipher initialization failure (extremely rare)
+- Underlying cryptographic library errors
+
+**Note:** This error is rare in normal operation. If you encounter it, it typically indicates a critical system issue.
+
+### Decryption
+
+Returned when the decryption operation fails.
+
+```rust
+Decryption
+```
+
+**Caused by:**
+- Using the wrong key to decrypt an envelope
+- Tampered or corrupted ciphertext
+- Tampered or corrupted authentication tag
+- Modified nonce
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore, QimemError};
+
+let store = InMemoryKeyStore::default();
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+
+let key_a = store.create_key().expect("create a");
+let key_b = store.create_key().expect("create b");
+
+let material_a = store.get_key(key_a.key_id).expect("get a");
+let material_b = store.get_key(key_b.key_id).expect("get b");
+
+let envelope = engine.encrypt(&material_a, b"secret").expect("encrypt");
+
+// Try to decrypt with wrong key
+let err = engine.decrypt(&material_b, &envelope).expect_err("should fail");
+match err {
+    QimemError::Decryption => println!("Decryption failed (wrong key or tampered data)"),
+    _ => panic!("unexpected error"),
+}
+```
+
+### Serialization
+
+Returned when JSON serialization or deserialization fails.
+
+```rust
+Serialization(String)
+```
+
+<ParamField path="0" type="String">
+  Detailed error message from the serialization library.
+</ParamField>
+
+**Caused by:**
+- Invalid JSON when deserializing with `Envelope::deserialize_json()`
+- Internal serialization errors (rare)
+
+### Config
+
+Returned when configuration or initialization fails.
+
+```rust
+Config(String)
+```
+
+<ParamField path="0" type="String">
+  Description of the configuration issue.
+</ParamField>
+
+**Caused by:**
+- Invalid configuration parameters
+- Initialization failures
+
+### Database
+
+<Note>
+Only available with the `stateful` feature flag.
+</Note>
+
+Returned when a PostgreSQL operation fails.
+
+```rust
+#[cfg(feature = "stateful")]
+Database(sqlx::Error)
+```
+
+<ParamField path="0" type="sqlx::Error">
+  The underlying SQLx error from PostgreSQL operations.
+</ParamField>
+
+**Caused by:**
+- Database connection failures
+- SQL query errors
+- Transaction failures
+- Schema mismatches
+
+**Example:**
+
+```rust
+#[cfg(feature = "stateful")]
+use qimem::{KeyStore, PostgresKeyStore, QimemError};
+use sqlx::PgPool;
+
+#[tokio::main]
+async fn main() {
+    let result = PgPool::connect("postgres://invalid").await;
+    
+    if let Err(e) = result {
+        match QimemError::from(e) {
+            QimemError::Database(db_err) => println!("Database error: {}", db_err),
+            _ => {}
+        }
+    }
+}
+```
+
+## Error Handling Patterns
+
+### Basic Pattern Matching
+
+```rust
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore, QimemError};
+
+let store = InMemoryKeyStore::default();
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+
+let key_meta = store.create_key().expect("create key");
+let key = store.get_key(key_meta.key_id).expect("get key");
+
+match engine.encrypt(&key, b"data") {
+    Ok(envelope) => println!("Encrypted successfully"),
+    Err(QimemError::KeyInactive(id)) => println!("Key {} is inactive", id),
+    Err(QimemError::Encryption) => println!("Encryption failed"),
+    Err(e) => println!("Other error: {}", e),
+}
+```
+
+### Propagating Errors
+
+```rust
+use qimem::{Algorithm, CryptoEngine, Envelope, InMemoryKeyStore, KeyStore, Result};
+
+fn encrypt_data(data: &[u8]) -> Result<Vec<u8>> {
+    let store = InMemoryKeyStore::default();
+    let key_meta = store.create_key()?;
+    let key = store.get_key(key_meta.key_id)?;
+    
+    let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+    let envelope = engine.encrypt(&key, data)?;
+    
+    envelope.serialize_binary()
+}
+```
+
+### Handling Decryption Failures
+
+```rust
+use qimem::{CryptoEngine, Envelope, InMemoryKeyStore, KeyStore, QimemError, Result};
+
+fn safe_decrypt(binary: &[u8]) -> Result<Vec<u8>> {
+    let store = InMemoryKeyStore::default();
+    
+    let envelope = Envelope::deserialize_binary(binary)?;
+    
+    let key = store.get_key(envelope.key_id)
+        .map_err(|_| QimemError::InvalidEnvelope("key not available"))?;
+    
+    let engine = qimem::CryptoEngine::new(envelope.algorithm);
+    
+    engine.decrypt(&key, &envelope)
+}
+```
+
+## Error Conversion
+
+QIMEM uses the `thiserror` crate, providing automatic `Display` implementations and error chaining:
+
+```rust
+use qimem::QimemError;
+
+let err = QimemError::Encryption;
+println!("{}", err); // Prints: "encryption failed"
+println!("Debug: {:?}", err); // Prints: "Encryption"
+```

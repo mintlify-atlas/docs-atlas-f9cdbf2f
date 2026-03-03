@@ -1,0 +1,513 @@
+---
+title: 'Production Deployment'
+description: 'Best practices and considerations for deploying QIMEM in production'
+---
+
+This guide covers security, performance, and operational considerations for running QIMEM in production environments.
+
+## Architecture Overview
+
+A production QIMEM deployment consists of:
+
+1. **QIMEM API servers**: One or more instances behind a load balancer
+2. **PostgreSQL database**: Managed instance with encryption at rest
+3. **Secrets management**: External system for credentials and configuration
+4. **Monitoring**: Logging, metrics, and health checks
+
+```
+┌─────────────┐
+│ Load        │
+│ Balancer    │
+└──────┬──────┘
+       │
+       ├─────► QIMEM API (instance 1)
+       │
+       ├─────► QIMEM API (instance 2)
+       │
+       └─────► QIMEM API (instance 3)
+                     │
+                     ▼
+              ┌──────────────┐
+              │  PostgreSQL  │
+              │  (Managed)   │
+              └──────────────┘
+```
+
+## Security Best Practices
+
+### Key Material Protection
+
+QIMEM is designed with security-first principles:
+
+<Steps>
+  <Step title="Memory safety">
+    Key material is wrapped with `zeroize::Zeroizing` to clear sensitive data from memory.
+    
+    ```rust
+    use zeroize::Zeroizing;
+    
+    // Key material is automatically zeroed when dropped
+    let key: Zeroizing<Vec<u8>> = /* ... */;
+    ```
+  </Step>
+
+  <Step title="No logging of keys">
+    The codebase enforces that **no key bytes are ever logged** at any log level.
+    
+    ```bash
+    # Even with trace logging, keys are never exposed
+    RUST_LOG=trace
+    ```
+  </Step>
+
+  <Step title="Code safety">
+    The project enables strict compiler checks:
+    
+    ```rust
+    #![deny(missing_docs)]
+    #![deny(unsafe_code)]
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  QIMEM provides encryption and key lifecycle management. It does **not** provide authentication, authorization, or identity management. Deploy behind an API gateway or service mesh with proper auth controls.
+</Warning>
+
+### Database Security
+
+<CardGroup cols={2}>
+  <Card title="SSL/TLS" icon="lock">
+    **Always require encrypted connections**
+    
+    ```bash
+    DATABASE_URL=postgres://user:pass@db.prod.example.com:5432/qimem?sslmode=require
+    ```
+  </Card>
+  
+  <Card title="Encryption at Rest" icon="shield">
+    **Enable transparent data encryption**
+    
+    Use managed services with automatic encryption (AWS RDS, GCP Cloud SQL, Azure Database) or encrypted disk volumes.
+  </Card>
+  
+  <Card title="Network Isolation" icon="network-wired">
+    **Restrict database access**
+    
+    Use VPCs, security groups, and firewall rules to limit connections to only QIMEM API servers.
+  </Card>
+  
+  <Card title="Credentials" icon="key">
+    **Use secrets management**
+    
+    Store `DATABASE_URL` in AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, or HashiCorp Vault.
+  </Card>
+</CardGroup>
+
+### Network Security
+
+```bash
+# Bind to localhost when behind a reverse proxy
+QIMEM_BIND=127.0.0.1:8080
+```
+
+<Info>
+  Deploy QIMEM behind a reverse proxy (nginx, Envoy) or API gateway for TLS termination, rate limiting, and authentication.
+</Info>
+
+**Recommended architecture**:
+
+```
+Internet → TLS → Load Balancer → API Gateway (auth) → QIMEM API → PostgreSQL
+```
+
+## Configuration
+
+### Production Environment Variables
+
+```bash .env.production
+# Engine mode (always stateful in production)
+QIMEM_MODE=stateful
+
+# Database connection (from secrets manager)
+DATABASE_URL=postgres://qimem_user:${DB_PASSWORD}@db.prod.example.com:5432/qimem?sslmode=require&pool_max_conns=20
+
+# Bind address (localhost if behind proxy)
+QIMEM_BIND=127.0.0.1:8080
+
+# Logging (info level)
+RUST_LOG=info
+```
+
+<Warning>
+  Never commit production credentials to version control. Use environment injection or secrets management.
+</Warning>
+
+### Managed PostgreSQL Settings
+
+<Tabs>
+  <Tab title="AWS RDS">
+    **Recommended settings**:
+    - Instance class: `db.t4g.medium` or larger
+    - Storage: Encrypted GP3 with auto-scaling
+    - Multi-AZ: Enabled for high availability
+    - Backup retention: 7-30 days
+    - Connection string:
+    
+    ```bash
+    DATABASE_URL=postgres://qimem:${PASSWORD}@qimem-db.abcdefg.us-east-1.rds.amazonaws.com:5432/qimem?sslmode=require
+    ```
+  </Tab>
+  
+  <Tab title="GCP Cloud SQL">
+    **Recommended settings**:
+    - Machine type: `db-custom-2-8192` or larger
+    - Storage: Auto-scaling with encryption
+    - High availability: Regional (multi-zone)
+    - Automated backups: Enabled
+    - Connection string:
+    
+    ```bash
+    DATABASE_URL=postgres://qimem:${PASSWORD}@10.1.2.3:5432/qimem?sslmode=require
+    ```
+  </Tab>
+  
+  <Tab title="Azure Database">
+    **Recommended settings**:
+    - Compute tier: General Purpose, 2 vCores
+    - Storage: Encrypted with auto-growth
+    - High availability: Zone-redundant
+    - Backup retention: 7-35 days
+    - Connection string:
+    
+    ```bash
+    DATABASE_URL=postgres://qimem@qimem-db:${PASSWORD}@qimem-db.postgres.database.azure.com:5432/qimem?sslmode=require
+    ```
+  </Tab>
+</Tabs>
+
+## Deployment Patterns
+
+### Container Orchestration
+
+<Tabs>
+  <Tab title="Kubernetes">
+    ```yaml deployment.yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qimem-api
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: qimem-api
+      template:
+        metadata:
+          labels:
+            app: qimem-api
+        spec:
+          containers:
+          - name: qimem-api
+            image: qimem-api:latest
+            ports:
+            - containerPort: 8080
+            env:
+            - name: QIMEM_MODE
+              value: "stateful"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: qimem-secrets
+                  key: database-url
+            - name: QIMEM_BIND
+              value: "0.0.0.0:8080"
+            - name: RUST_LOG
+              value: "info"
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 10
+              periodSeconds: 10
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 5
+              periodSeconds: 5
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+    ```
+  </Tab>
+  
+  <Tab title="Docker Swarm">
+    ```yaml docker-compose.prod.yml
+    version: '3.8'
+    
+    services:
+      qimem-api:
+        image: qimem-api:latest
+        deploy:
+          replicas: 3
+          restart_policy:
+            condition: on-failure
+          resources:
+            limits:
+              cpus: '0.5'
+              memory: 512M
+            reservations:
+              cpus: '0.25'
+              memory: 256M
+        environment:
+          QIMEM_MODE: stateful
+          DATABASE_URL: postgres://qimem:${DB_PASSWORD}@db.prod.example.com:5432/qimem?sslmode=require
+          QIMEM_BIND: 0.0.0.0:8080
+          RUST_LOG: info
+        ports:
+          - "8080:8080"
+        healthcheck:
+          test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+          interval: 10s
+          timeout: 3s
+          retries: 3
+    ```
+  </Tab>
+  
+  <Tab title="systemd">
+    ```ini /etc/systemd/system/qimem-api.service
+    [Unit]
+    Description=QIMEM API Server
+    After=network.target postgresql.service
+    
+    [Service]
+    Type=simple
+    User=qimem
+    Group=qimem
+    WorkingDirectory=/opt/qimem
+    
+    Environment="QIMEM_MODE=stateful"
+    Environment="DATABASE_URL=postgres://qimem:password@localhost:5432/qimem?sslmode=require"
+    Environment="QIMEM_BIND=127.0.0.1:8080"
+    Environment="RUST_LOG=info"
+    
+    ExecStart=/usr/local/bin/qimem-api
+    Restart=on-failure
+    RestartSec=5s
+    
+    # Security hardening
+    NoNewPrivileges=true
+    PrivateTmp=true
+    ProtectSystem=strict
+    ProtectHome=true
+    
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    
+    ```bash
+    # Enable and start service
+    sudo systemctl daemon-reload
+    sudo systemctl enable qimem-api
+    sudo systemctl start qimem-api
+    
+    # Check status
+    sudo systemctl status qimem-api
+    ```
+  </Tab>
+</Tabs>
+
+## Monitoring and Observability
+
+### Health Checks
+
+QIMEM provides a `/health` endpoint for liveness and readiness probes:
+
+```bash
+# Health check
+curl -fsS http://localhost:8080/health
+
+# Returns 200 OK if healthy
+```
+
+<Info>
+  Configure your load balancer or orchestration platform to use this endpoint for automatic instance health monitoring.
+</Info>
+
+### Logging
+
+Set appropriate log levels:
+
+```bash
+# Production: info level
+RUST_LOG=info
+
+# Debugging: enable module-specific debug logs
+RUST_LOG=info,qimem=debug,qimem_api=debug
+```
+
+**Structured logging**: QIMEM uses standard Rust logging. Forward logs to centralized systems:
+
+- **CloudWatch Logs** (AWS)
+- **Cloud Logging** (GCP)
+- **Azure Monitor** (Azure)
+- **Elasticsearch/Datadog/Splunk**
+
+<Warning>
+  Key material is **never logged** at any level. All logs are safe to aggregate and analyze.
+</Warning>
+
+### Metrics
+
+Monitor these key metrics:
+
+<CardGroup cols={2}>
+  <Card title="Request Rate" icon="chart-line">
+    Requests per second for `/keys`, `/encrypt`, `/decrypt` endpoints
+  </Card>
+  
+  <Card title="Error Rate" icon="triangle-exclamation">
+    4xx and 5xx response rates, especially authentication and validation errors
+  </Card>
+  
+  <Card title="Latency" icon="clock">
+    P50, P95, P99 response times for encryption/decryption operations
+  </Card>
+  
+  <Card title="Database" icon="database">
+    Connection pool usage, query latency, active connections
+  </Card>
+</CardGroup>
+
+## Performance Tuning
+
+### Database Connection Pool
+
+Configure pool size based on concurrent workload:
+
+```bash
+# Default: 10 connections
+DATABASE_URL=postgres://...?pool_max_conns=10
+
+# High traffic: increase to 20-30
+DATABASE_URL=postgres://...?pool_max_conns=20
+```
+
+<Tip>
+  Monitor connection pool exhaustion. If you see "connection pool timeout" errors, increase `pool_max_conns` and verify database connection limits.
+</Tip>
+
+### Horizontal Scaling
+
+QIMEM is stateless at the application layer and can scale horizontally:
+
+```bash
+# Kubernetes: scale to 5 replicas
+kubectl scale deployment qimem-api --replicas=5
+
+# Docker Swarm: update replicas
+docker service scale qimem-api=5
+```
+
+All instances share the same PostgreSQL database for consistent key access.
+
+### Resource Allocation
+
+**Minimum recommended resources**:
+- **CPU**: 0.25 cores (250m)
+- **Memory**: 256 MiB
+
+**Typical production**:
+- **CPU**: 0.5-1.0 cores
+- **Memory**: 512 MiB - 1 GiB
+
+<Info>
+  Start with minimum resources and scale based on observed CPU and memory usage under load.
+</Info>
+
+## Backup and Disaster Recovery
+
+### Database Backups
+
+<Steps>
+  <Step title="Enable automated backups">
+    Configure your managed PostgreSQL service for daily automated backups with 7-30 day retention.
+  </Step>
+
+  <Step title="Test restore procedures">
+    Regularly test restoring from backups to a staging environment.
+    
+    ```bash
+    # Manual backup
+    pg_dump -h db.prod.example.com -U qimem_user qimem > qimem_backup_$(date +%Y%m%d).sql
+    ```
+  </Step>
+
+  <Step title="Document recovery process">
+    Maintain runbooks for database recovery and disaster scenarios.
+  </Step>
+</Steps>
+
+<Warning>
+  Loss of the database means **loss of all encryption keys** and inability to decrypt existing ciphertexts. Backups are critical.
+</Warning>
+
+### High Availability
+
+- **Multi-AZ database**: Use zone-redundant or multi-region database configurations
+- **Load balancing**: Deploy multiple API instances behind a load balancer
+- **Health checks**: Configure automatic instance replacement on failures
+
+## Deployment Checklist
+
+<Steps>
+  <Step title="Security">
+    - [ ] `QIMEM_MODE=stateful` configured
+    - [ ] Database connections use `sslmode=require`
+    - [ ] Database encryption at rest enabled
+    - [ ] Credentials stored in secrets manager
+    - [ ] Network access restricted (VPC, security groups)
+    - [ ] API deployed behind authentication layer
+  </Step>
+
+  <Step title="Infrastructure">
+    - [ ] Managed PostgreSQL with multi-AZ/zone-redundant
+    - [ ] Multiple API instances for high availability
+    - [ ] Load balancer with health checks configured
+    - [ ] Automated database backups enabled
+    - [ ] Backup restore procedure tested
+  </Step>
+
+  <Step title="Observability">
+    - [ ] Logging configured and aggregated
+    - [ ] Health check endpoint monitored
+    - [ ] Request, error, and latency metrics tracked
+    - [ ] Alerts configured for error rates and downtime
+  </Step>
+
+  <Step title="Operations">
+    - [ ] Deployment automation (CI/CD) configured
+    - [ ] Runbooks for common scenarios documented
+    - [ ] Incident response procedures defined
+    - [ ] Regular security and dependency updates scheduled
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Docker and container setup
+  </Card>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Complete configuration reference
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full API documentation
+  </Card>
+</CardGroup>

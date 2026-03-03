@@ -1,0 +1,229 @@
+---
+title: 'Configuration'
+description: 'Environment variables and runtime configuration for QIMEM'
+---
+
+QIMEM is configured entirely through environment variables. All configuration is loaded at startup via `Config::from_env()`.
+
+## Environment Variables
+
+### QIMEM_MODE
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `stateless`  
+**Valid values**: `stateless`, `stateful`
+
+Determines the engine's runtime mode:
+
+- **`stateless`**: Keys stored in memory only, no persistence
+- **`stateful`**: Keys persisted to PostgreSQL database
+
+```bash
+QIMEM_MODE=stateful
+```
+
+<Info>
+  Stateless mode is suitable for development and testing. For production workloads, use stateful mode with a managed PostgreSQL instance.
+</Info>
+
+### DATABASE_URL
+
+**Type**: `string`  
+**Required**: Yes (when `QIMEM_MODE=stateful`)  
+**Default**: None
+
+PostgreSQL connection string. Required when running in stateful mode.
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/qimem
+```
+
+**Format**: `postgres://[user]:[password]@[host]:[port]/[database][?options]`
+
+<Warning>
+  The `DATABASE_URL` must be provided when `QIMEM_MODE=stateful`, or the application will fail to start with a configuration error.
+</Warning>
+
+#### Connection String Options
+
+```bash
+# Disable SSL (development only)
+DATABASE_URL=postgres://user:pass@localhost:5432/qimem?sslmode=disable
+
+# Require SSL (production)
+DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=require
+
+# With connection pool settings
+DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=require&pool_max_conns=20
+```
+
+### QIMEM_BIND
+
+**Type**: `string` (socket address)  
+**Required**: No  
+**Default**: `0.0.0.0:8080`
+
+Socket address for the HTTP API server.
+
+```bash
+QIMEM_BIND=0.0.0.0:8080
+```
+
+**Format**: `[host]:[port]`
+
+<CodeGroup>
+```bash All Interfaces
+# Bind to all network interfaces (default)
+QIMEM_BIND=0.0.0.0:8080
+```
+
+```bash Localhost Only
+# Bind to localhost only (behind reverse proxy)
+QIMEM_BIND=127.0.0.1:8080
+```
+
+```bash Custom Port
+# Use custom port
+QIMEM_BIND=0.0.0.0:3000
+```
+</CodeGroup>
+
+<Tip>
+  In production behind a reverse proxy or load balancer, binding to `127.0.0.1` provides an additional security layer.
+</Tip>
+
+### RUST_LOG
+
+**Type**: `string`  
+**Required**: No  
+**Default**: None (no logging)  
+**Recommended**: `info`
+
+Controls logging verbosity using the standard Rust logging directives.
+
+```bash
+RUST_LOG=info
+```
+
+**Common values**:
+
+- `error`: Only errors
+- `warn`: Warnings and errors
+- `info`: Informational messages, warnings, and errors (recommended)
+- `debug`: Detailed debug output
+- `trace`: Verbose trace output
+
+<CodeGroup>
+```bash Production
+# Production logging
+RUST_LOG=info
+```
+
+```bash Development
+# Development with debug output
+RUST_LOG=debug
+```
+
+```bash Module-specific
+# Debug only for specific modules
+RUST_LOG=info,qimem=debug,qimem_api=debug
+```
+</CodeGroup>
+
+<Warning>
+  Key material is **never** logged at any log level. The codebase enforces `#![deny(unsafe_code)]` and uses `zeroize::Zeroizing` to protect sensitive data.
+</Warning>
+
+## Configuration Loading
+
+QIMEM loads configuration from environment variables using `Config::from_env()`:
+
+```rust
+pub struct Config {
+    /// Runtime mode.
+    pub mode: Mode,
+    /// Database URL when stateful.
+    pub database_url: Option<String>,
+    /// Bind address.
+    pub bind: SocketAddr,
+}
+```
+
+### Validation Rules
+
+1. **Mode validation**: `QIMEM_MODE` must be either `stateless` or `stateful`
+2. **Database requirement**: `DATABASE_URL` is required when mode is `stateful`
+3. **Bind address parsing**: `QIMEM_BIND` must be a valid socket address
+
+If validation fails, the application exits with a configuration error:
+
+```
+QimemError::Config("QIMEM_MODE must be stateless|stateful")
+QimemError::Config("DATABASE_URL is required for stateful mode")
+QimemError::Config("invalid QIMEM_BIND: ...")
+```
+
+## Example Configurations
+
+### Development (Stateless)
+
+```bash .env
+QIMEM_MODE=stateless
+QIMEM_BIND=0.0.0.0:8080
+RUST_LOG=debug
+```
+
+### Development (Stateful)
+
+```bash .env
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/qimem?sslmode=disable
+QIMEM_BIND=0.0.0.0:8080
+RUST_LOG=debug
+```
+
+### Production
+
+```bash .env
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://qimem_user:secure_password@db.prod.example.com:5432/qimem?sslmode=require
+QIMEM_BIND=127.0.0.1:8080
+RUST_LOG=info
+```
+
+<Info>
+  Use a `.env` file for local development and inject environment variables directly in production (via orchestration tools, secret managers, etc.).
+</Info>
+
+## Docker Environment
+
+When running with Docker Compose, environment variables are set in the `docker-compose.yml`:
+
+```yaml
+qimem-api:
+  environment:
+    QIMEM_MODE: stateful
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+    QIMEM_BIND: 0.0.0.0:8080
+    RUST_LOG: info
+```
+
+Or override via an environment file:
+
+```yaml
+qimem-api:
+  env_file:
+    - .env.production
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Stateful Mode" icon="database" href="/deployment/stateful-mode">
+    Configure PostgreSQL backend
+  </Card>
+  <Card title="Production Guide" icon="rocket" href="/deployment/production">
+    Production deployment considerations
+  </Card>
+</CardGroup>

@@ -1,80 +1,242 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get QIMEM running and encrypt your first message in under 5 minutes.
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will get you from zero to encrypting and decrypting data with QIMEM in under 5 minutes.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- Docker and Docker Compose installed
+- `curl` and `jq` for testing (or any HTTP client)
 
-### Step 2: Deploy your changes
+## Step 1: Launch QIMEM API
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Steps>
+  <Step title="Clone and start the service">
+    Start QIMEM with Docker Compose. This launches both PostgreSQL and the API server:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    git clone https://github.com/yourusername/qimem.git
+    cd qimem
+    docker compose up --build
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Info>
+    The API server will be available at `http://localhost:8080` once the health check passes.
+    </Info>
+  </Step>
 
-### Step 3: Go live
+  <Step title="Verify the service is running">
+    Check the health endpoint:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash
+    curl -fsS http://localhost:8080/health
+    ```
 
-## Next steps
+    Expected response:
+    ```json
+    {"status":"ok"}
+    ```
+  </Step>
+</Steps>
 
-Now that you have your docs running, explore these key features:
+## Step 2: Create an Encryption Key
 
-<CardGroup cols={2}>
+Create a new encryption key using the `/keys` endpoint:
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+```bash
+KEY_ID=$(curl -fsS -X POST http://localhost:8080/keys \
+  -H 'content-type: application/json' \
+  -d '{}' | jq -r '.key_id')
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+echo "Created key: $KEY_ID"
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+The API automatically generates a secure AES-256-GCM key. Store the returned `key_id` to use this key for encryption.
 </Note>
+
+**Response format:**
+```json
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+## Step 3: Encrypt Data
+
+Encrypt a message using your new key:
+
+```bash
+ENVELOPE=$(curl -fsS -X POST http://localhost:8080/encrypt \
+  -H 'content-type: application/json' \
+  -d "{\"key_id\":\"${KEY_ID}\",\"input\":\"hello world\"}" | jq -r '.envelope')
+
+echo "Encrypted envelope: $ENVELOPE"
+```
+
+<Info>
+The `envelope` field contains a base64-encoded binary envelope with all metadata needed for decryption.
+</Info>
+
+**Request format:**
+```json
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000",
+  "input": "hello world"
+}
+```
+
+**Response format:**
+```json
+{
+  "envelope": "AQGQXhQA4ptBtKcWRGZVQAA..."
+}
+```
+
+## Step 4: Decrypt Data
+
+Decrypt the envelope to retrieve your original message:
+
+```bash
+curl -fsS -X POST http://localhost:8080/decrypt \
+  -H 'content-type: application/json' \
+  -d "{\"input\":\"${ENVELOPE}\"}"
+```
+
+**Response:**
+```json
+{
+  "plaintext": "hello world"
+}
+```
+
+<Tip>
+Notice you don't need to provide the `key_id` for decryption — it's embedded in the envelope!
+</Tip>
+
+## Complete Example
+
+Here's the full workflow in one script:
+
+```bash
+# Create key
+KEY_ID=$(curl -fsS -X POST http://localhost:8080/keys \
+  -H 'content-type: application/json' \
+  -d '{}' | jq -r '.key_id')
+
+echo "Step 1: Created key $KEY_ID"
+
+# Encrypt
+ENVELOPE=$(curl -fsS -X POST http://localhost:8080/encrypt \
+  -H 'content-type: application/json' \
+  -d "{\"key_id\":\"${KEY_ID}\",\"input\":\"sensitive data\"}" | jq -r '.envelope')
+
+echo "Step 2: Encrypted data"
+
+# Decrypt
+PLAINTEXT=$(curl -fsS -X POST http://localhost:8080/decrypt \
+  -H 'content-type: application/json' \
+  -d "{\"input\":\"${ENVELOPE}\"}" | jq -r '.plaintext')
+
+echo "Step 3: Decrypted: $PLAINTEXT"
+```
+
+## Using the CLI
+
+If you prefer command-line tools over HTTP API:
+
+<Steps>
+  <Step title="Build the CLI">
+    ```bash
+    cargo build --release
+    ```
+  </Step>
+
+  <Step title="Generate a key">
+    ```bash
+    ./target/release/qimem keygen
+    ```
+
+    Output:
+    ```json
+    {"key_id":"550e8400-e29b-41d4-a716-446655440000"}
+    ```
+  </Step>
+
+  <Step title="Encrypt data">
+    ```bash
+    ./target/release/qimem encrypt \
+      --key-id 550e8400-e29b-41d4-a716-446655440000 \
+      --input "hello world"
+    ```
+
+    Output:
+    ```json
+    {"envelope":"AQGQXhQA4ptBtKcWRGZVQAA..."}
+    ```
+  </Step>
+
+  <Step title="Decrypt data">
+    ```bash
+    ./target/release/qimem decrypt \
+      --input "AQGQXhQA4ptBtKcWRGZVQAA..."
+    ```
+
+    Output:
+    ```json
+    {"plaintext":"hello world"}
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The CLI uses an **in-memory key store** by default. Keys are lost when the process exits. For production, use the API with PostgreSQL backend.
+</Warning>
+
+## Key Rotation
+
+Rotate a key to generate a new version while keeping the old one available for decryption:
+
+```bash
+curl -fsS -X POST http://localhost:8080/rotate \
+  -H 'content-type: application/json' \
+  -d "{\"key_id\":\"${KEY_ID}\"}"
+```
+
+**Response:**
+```json
+{
+  "key_id": "750e8400-e29b-41d4-a716-446655440001",
+  "lineage_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version": 2,
+  "active": true
+}
+```
+
+<Note>
+The old key (version 1) is deactivated for encryption but remains available for decrypting existing envelopes.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Learn about different installation methods and deployment modes
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="/api/overview">
+    Explore all endpoints, request formats, and error codes
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    Understand envelope format, key rotation, and security design
+  </Card>
+  
+  <Card title="Production Deployment" icon="server" href="/deployment/production">
+    Configure PostgreSQL, environment variables, and monitoring
+  </Card>
+</CardGroup>

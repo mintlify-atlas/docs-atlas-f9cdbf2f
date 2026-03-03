@@ -1,0 +1,87 @@
+---
+title: Rotate Key
+description: Create a new key version and deactivate the old key
+---
+
+## Endpoint
+
+```
+POST /rotate
+```
+
+Rotates an encryption key by creating a new version and deactivating the old key. The old key remains available for decryption but cannot be used for new encryption operations.
+
+## Request
+
+<ParamField path="key_id" type="string (UUID)" required>
+  The ID of the key to rotate
+</ParamField>
+
+## Response
+
+<ResponseField name="key_id" type="string (UUID)" required>
+  The ID of the newly created key
+</ResponseField>
+
+<ResponseField name="lineage_id" type="string (UUID)" required>
+  The lineage identifier linking all versions of this key
+</ResponseField>
+
+<ResponseField name="version" type="integer" required>
+  The version number of the new key
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Whether the new key is active (always `true` for the newly created key)
+</ResponseField>
+
+## Key Rotation Behavior
+
+- The old key is deactivated (`active: false`) and can only be used for decryption
+- The new key inherits the same `lineage_id` as the old key
+- The new key has an incremented `version` number
+- The new key is immediately active for encryption operations
+- Old envelopes encrypted with the previous key can still be decrypted
+
+## Example
+
+```bash
+KEY_ID="550e8400-e29b-41d4-a716-446655440000"
+
+curl -X POST http://localhost:8080/rotate \
+  -H 'Content-Type: application/json' \
+  -d "{\"key_id\":\"${KEY_ID}\"}"
+```
+
+Response:
+
+```json
+{
+  "key_id": "660e8400-e29b-41d4-a716-446655440001",
+  "lineage_id": "770e8400-e29b-41d4-a716-446655440002",
+  "version": 2,
+  "active": true
+}
+```
+
+## Error Responses
+
+### 404 Not Found
+
+Returned when the specified key does not exist.
+
+```json
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when key rotation fails in the keystore.
+
+```json
+{
+  "error": "keystore error message"
+}
+```

@@ -1,0 +1,88 @@
+---
+title: Encrypt Data
+description: Encrypt plaintext using a specified key
+---
+
+## Endpoint
+
+```
+POST /encrypt
+```
+
+Encrypts plaintext data using the specified key and returns a base64-encoded envelope containing the ciphertext and metadata.
+
+## Request
+
+<ParamField path="key_id" type="string (UUID)" required>
+  The ID of the encryption key to use
+</ParamField>
+
+<ParamField path="input" type="string" required>
+  The plaintext data to encrypt
+</ParamField>
+
+## Response
+
+<ResponseField name="envelope" type="string" required>
+  Base64-encoded envelope containing the encrypted data, nonce, tag, algorithm, and key ID
+</ResponseField>
+
+## Envelope Structure
+
+The envelope contains:
+- `version`: Protocol version (currently 1)
+- `algorithm`: Encryption algorithm (AES-256-GCM)
+- `key_id`: Key identifier
+- `nonce`: Initialization vector
+- `ciphertext`: Encrypted data
+- `tag`: Authentication tag
+
+## Example
+
+```bash
+KEY_ID="550e8400-e29b-41d4-a716-446655440000"
+
+curl -X POST http://localhost:8080/encrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"key_id\":\"${KEY_ID}\",\"input\":\"hello\"}"
+```
+
+Response:
+
+```json
+{
+  "envelope": "AQEAAFUOhADim0HUpxZEZlVEAAAMAACqpZqZmZmZmZmZmZmZ..."
+}
+```
+
+## Error Responses
+
+### 404 Not Found
+
+Returned when the specified key does not exist.
+
+```json
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### 400 Bad Request
+
+Returned when the key is inactive (deactivated after rotation).
+
+```json
+{
+  "error": "key is inactive"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when encryption fails.
+
+```json
+{
+  "error": "encryption error"
+}
+```

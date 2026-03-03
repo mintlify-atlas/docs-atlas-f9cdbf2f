@@ -1,0 +1,355 @@
+---
+title: Troubleshooting
+description: Common issues, error messages, and solutions for QIMEM
+---
+
+## Common Errors
+
+This guide covers error messages from `src/error.rs` and how to resolve them.
+
+### Key Not Found
+
+**Error message:**
+```json
+{"error": "key not found: 550e8400-e29b-41d4-a716-446655440000"}
+```
+
+**HTTP status:** `404 NOT FOUND`
+
+**Cause:** The specified key ID does not exist in the keystore.
+
+<Accordion title="Resolution steps">
+1. **Verify the key ID**: Check that you're using the correct UUID
+2. **Check mode**: In stateless mode, keys are lost on restart
+3. **Database check**: In stateful mode, query the `keys` table:
+   ```sql
+   SELECT key_id, lineage_id, active FROM keys WHERE key_id = '550e8400-e29b-41d4-a716-446655440000';
+   ```
+4. **Create a new key** if the key was never created:
+   ```bash
+   curl -X POST http://localhost:8080/keys
+   ```
+</Accordion>
+
+### Key Inactive
+
+**Error message:**
+```json
+{"error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"}
+```
+
+**HTTP status:** `400 BAD REQUEST`
+
+**Cause:** Attempting to encrypt with a key that has been rotated.
+
+<Accordion title="Resolution steps">
+1. **Use the latest key**: Rotate returns a new `key_id` - use that for encryption
+2. **Find the active key** in the lineage:
+   ```sql
+   SELECT key_id, version FROM keys 
+   WHERE lineage_id = (SELECT lineage_id FROM keys WHERE key_id = '550e8400-e29b-41d4-a716-446655440000')
+   AND active = true;
+   ```
+3. **For decryption**: This error should not occur. Inactive keys can still decrypt.
+</Accordion>
+
+<Warning>
+If you see this error during decryption, it indicates a bug. Old keys should always be available for decryption.
+</Warning>
+
+### Unsupported Envelope Version
+
+**Error message:**
+```json
+{"error": "unsupported envelope version: 2"}
+```
+
+**HTTP status:** `400 BAD REQUEST`
+
+**Cause:** The envelope was created with a newer version of QIMEM.
+
+<Accordion title="Resolution steps">
+1. **Upgrade QIMEM**: Update to the latest version
+2. **Check envelope format**: Ensure the base64 input is valid
+3. **Verify compatibility**: QIMEM currently only supports envelope version 1
+</Accordion>
+
+### Unsupported Algorithm
+
+**Error message:**
+```json
+{"error": "unsupported algorithm id: 5"}
+```
+
+**HTTP status:** `400 BAD REQUEST`
+
+**Cause:** The envelope specifies an encryption algorithm not supported by this version.
+
+<Accordion title="Resolution steps">
+1. **Verify envelope**: Check that the encrypted data wasn't corrupted
+2. **Upgrade QIMEM**: Newer algorithms may require a newer version
+3. **Current support**: QIMEM supports AES-256-GCM (algorithm ID 1)
+</Accordion>
+
+### Invalid Envelope
+
+**Error message:**
+```json
+{"error": "invalid envelope: invalid base64"}
+```
+
+**HTTP status:** `400 BAD REQUEST`
+
+**Cause:** The envelope data is malformed or corrupted.
+
+<Accordion title="Resolution steps">
+1. **Check base64 encoding**: Ensure the input is valid base64
+   ```bash
+   echo "<envelope>" | base64 -d > /dev/null && echo "Valid" || echo "Invalid"
+   ```
+2. **Verify envelope source**: Check for truncation during transmission
+3. **Test with known-good envelope**: Encrypt test data and decrypt it
+</Accordion>
+
+### Encryption Failed
+
+**Error message:**
+```json
+{"error": "encryption failed"}
+```
+
+**HTTP status:** `500 INTERNAL SERVER ERROR`
+
+**Cause:** Cryptographic operation failed (rare).
+
+<Accordion title="Resolution steps">
+1. **Check logs**: Enable `RUST_LOG=debug` for details
+2. **Verify key material**: Ensure the key is 32 bytes (256 bits)
+3. **Retry the operation**: Transient errors may resolve
+4. **Check system resources**: Low memory can cause failures
+</Accordion>
+
+### Decryption Failed
+
+**Error message:**
+```json
+{"error": "decryption failed"}
+```
+
+**HTTP status:** `500 INTERNAL SERVER ERROR`
+
+**Cause:** Authentication tag verification failed, or the ciphertext was tampered with.
+
+<Accordion title="Resolution steps">
+1. **Verify envelope integrity**: The data may have been modified
+2. **Check key correctness**: Ensure you're using the key that encrypted the data
+3. **Inspect the envelope**:
+   ```bash
+   echo "<base64-envelope>" | base64 -d | xxd
+   ```
+4. **This is normal if**: The ciphertext was intentionally modified (authentication will fail)
+</Accordion>
+
+<Warning>
+Decryption failures with valid envelopes and keys indicate potential data tampering or corruption.
+</Warning>
+
+### Database Error (Stateful Mode)
+
+**Error message:**
+```json
+{"error": "database error: connection refused"}
+```
+
+**HTTP status:** `500 INTERNAL SERVER ERROR`
+
+**Cause:** Cannot connect to Postgres or query execution failed.
+
+<Accordion title="Resolution steps">
+1. **Check DATABASE_URL**:
+   ```bash
+   echo $DATABASE_URL
+   # Should be: postgres://user:pass@host:5432/dbname
+   ```
+2. **Test connection**:
+   ```bash
+   psql $DATABASE_URL -c "SELECT 1;"
+   ```
+3. **Verify Postgres is running**:
+   ```bash
+   pg_isready -h localhost -p 5432
+   ```
+4. **Check migrations**: Ensure the `keys` table exists:
+   ```sql
+   \dt keys
+   ```
+5. **Restart with migration**:
+   ```bash
+   # Migrations run automatically on startup
+   ./qimem-api
+   ```
+</Accordion>
+
+### Configuration Failed
+
+**Error message:**
+```json
+{"error": "configuration failed: QIMEM_MODE must be stateless|stateful"}
+```
+
+**HTTP status:** Fails at startup (exits with code 1)
+
+**Cause:** Invalid environment variables.
+
+<Accordion title="Resolution steps">
+1. **Check QIMEM_MODE**:
+   ```bash
+   export QIMEM_MODE=stateless  # or stateful
+   ```
+2. **Check QIMEM_BIND**:
+   ```bash
+   export QIMEM_BIND=0.0.0.0:8080
+   ```
+3. **Stateful mode requires DATABASE_URL**:
+   ```bash
+   export DATABASE_URL=postgres://localhost/qimem
+   ```
+4. **Verify bind address format**:
+   ```bash
+   # Valid formats:
+   # 0.0.0.0:8080
+   # 127.0.0.1:3000
+   # [::]:8080
+   ```
+</Accordion>
+
+## Startup Issues
+
+### Server Won't Start
+
+**Symptoms:** Process exits immediately with error output.
+
+<Accordion title="Diagnosis steps">
+1. **Check configuration**:
+   ```bash
+   RUST_LOG=debug ./qimem-api
+   ```
+2. **Port already in use**:
+   ```bash
+   lsof -i :8080
+   # Change port: export QIMEM_BIND=0.0.0.0:8081
+   ```
+3. **Missing DATABASE_URL** (stateful mode):
+   ```bash
+   export DATABASE_URL=postgres://user:pass@localhost/qimem
+   ```
+4. **Migration failures**:
+   ```text
+   {"error":"configuration failed: migration failed: ...'"}
+   ```
+   Check Postgres logs and table permissions.
+</Accordion>
+
+### Health Check Failing
+
+**Symptoms:** `/health` returns connection refused or timeout.
+
+<Accordion title="Diagnosis steps">
+1. **Check if process is running**:
+   ```bash
+   ps aux | grep qimem-api
+   ```
+2. **Check listening ports**:
+   ```bash
+   netstat -tlnp | grep 8080
+   ```
+3. **Test locally**:
+   ```bash
+   curl http://localhost:8080/health
+   ```
+4. **Check firewall rules**:
+   ```bash
+   # Allow port 8080
+   sudo ufw allow 8080
+   ```
+</Accordion>
+
+## Performance Issues
+
+### Slow Encryption/Decryption
+
+<Accordion title="Troubleshooting tips">
+1. **Enable query logging** (stateful mode):
+   ```bash
+   RUST_LOG=sqlx=debug ./qimem-api
+   ```
+2. **Check database connection pool**: Monitor Postgres active connections
+3. **Database indexes**: Ensure `key_id` is indexed (should be automatic)
+4. **Large payloads**: AES-256-GCM performance degrades with very large inputs
+</Accordion>
+
+### Memory Usage Growing
+
+<Accordion title="Troubleshooting tips">
+1. **Stateless mode**: Keys accumulate in memory - restart periodically
+2. **Stateful mode**: Check Postgres connection pooling settings
+3. **Monitor process**:
+   ```bash
+   ps aux | grep qimem-api
+   # Check RSS column
+   ```
+</Accordion>
+
+## Debugging Tips
+
+<Tip>
+**Enable verbose logging for diagnostics:**
+```bash
+RUST_LOG=trace ./qimem-api 2>&1 | tee qimem.log
+```
+
+This logs all operations including cryptographic details.
+</Tip>
+
+### Test Encryption/Decryption Flow
+
+```bash
+# 1. Create a key
+KEY_RESPONSE=$(curl -s -X POST http://localhost:8080/keys)
+KEY_ID=$(echo $KEY_RESPONSE | jq -r '.key_id')
+
+# 2. Encrypt data
+ENC_RESPONSE=$(curl -s -X POST http://localhost:8080/encrypt \
+  -H "Content-Type: application/json" \
+  -d "{\"key_id\": \"$KEY_ID\", \"input\": \"test\"}")
+ENVELOPE=$(echo $ENC_RESPONSE | jq -r '.envelope')
+
+# 3. Decrypt data
+curl -X POST http://localhost:8080/decrypt \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"$ENVELOPE\"}"
+# Should return: {"plaintext":"test"}
+```
+
+### Inspect Envelopes
+
+```bash
+# Decode base64 and inspect binary format
+echo "<envelope>" | base64 -d | xxd
+
+# First bytes:
+# Byte 0: Version (should be 0x01)
+# Byte 1: Algorithm (should be 0x01 for AES-256-GCM)
+# Bytes 2-17: Key ID (16 bytes UUID)
+```
+
+## Getting Help
+
+<Info>
+If you encounter an issue not covered here:
+
+1. Check logs with `RUST_LOG=debug`
+2. Review the [Monitoring](/operations/monitoring) guide
+3. Verify your configuration against the [Configuration reference](/deployment/configuration)
+4. Report bugs with log output and steps to reproduce
+</Info>

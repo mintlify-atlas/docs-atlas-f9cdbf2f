@@ -1,0 +1,127 @@
+---
+title: Introduction to QIMEM
+description: A deterministic encryption and key lifecycle engine built for security, auditability, and production reliability.
+---
+
+# QIMEM — Deterministic Encryption & Key Lifecycle Engine
+
+QIMEM is a focused encryption engine for deterministic, versioned, auditable envelope encryption and key lifecycle management.
+
+## What QIMEM Is
+
+A production-ready cryptographic engine that provides:
+
+- **Deterministic envelope encryption** with versioned format
+- **Key lifecycle management** with rotation support
+- **Auditable operations** with structured error handling
+- **Multiple deployment modes** (in-memory, PostgreSQL-backed)
+- **HTTP API and CLI** for flexible integration
+
+## What QIMEM Is Not
+
+QIMEM intentionally does not provide:
+
+- Authentication or identity management
+- Authorization or access control
+- Plugin frameworks or extensibility layers
+
+This focused scope ensures reliability and security through simplicity.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Deterministic Encryption" icon="lock">
+    AES-256-GCM envelope encryption with binary and JSON serialization formats
+  </Card>
+  
+  <Card title="Key Rotation" icon="rotate">
+    Seamless key rotation while maintaining decrypt compatibility with old keys
+  </Card>
+  
+  <Card title="Production Hardened" icon="shield">
+    Zero unsafe code, automatic key material zeroization, no key logging
+  </Card>
+  
+  <Card title="Flexible Deployment" icon="server">
+    In-memory mode for testing, PostgreSQL mode for stateful production
+  </Card>
+</CardGroup>
+
+## Architecture Components
+
+### Core Library (`qimem`)
+
+The foundation providing:
+- Crypto engine and envelope format
+- Key store traits and implementations
+- In-memory key store (default)
+- PostgreSQL key store (`stateful` feature)
+
+### HTTP API (`qimem-api`)
+
+Axum-based REST API exposing:
+- Key lifecycle operations (create, rotate)
+- Encryption and decryption endpoints
+- Health checks and error handling
+
+### CLI (`qimem`)
+
+Command-line interface for:
+- Key generation
+- File and data encryption/decryption
+- Key rotation workflows
+
+## Envelope Format
+
+QIMEM uses a deterministic envelope format (v1) with these fields:
+
+- `version: u8` — Envelope format version (currently 1)
+- `algorithm: Algorithm` — Encryption algorithm identifier
+- `key_id: Uuid` — Reference to encryption key
+- `nonce: Vec<u8>` — Encryption nonce
+- `ciphertext: Vec<u8>` — Encrypted payload
+- `tag: Vec<u8>` — Authentication tag
+
+<Info>
+The envelope supports both **binary** and **JSON** serialization formats, both deterministic for consistency.
+</Info>
+
+## Security Guarantees
+
+<CardGroup cols={1}>
+  <Card title="Memory Safety">
+    All key material is wrapped with `zeroize::Zeroizing` for automatic secure cleanup
+  </Card>
+  
+  <Card title="No Key Logging">
+    Key bytes are never logged, even in debug or trace modes
+  </Card>
+  
+  <Card title="Code Quality">
+    Enforces `#![deny(missing_docs)]` and `#![deny(unsafe_code)]` for reliability
+  </Card>
+  
+  <Card title="Tamper Detection">
+    Invalid or tampered envelopes fail with structured error types
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Get up and running with a working encryption example in 5 minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Install the API server, CLI, or library for your use case
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all available endpoints and request/response formats
+  </Card>
+  
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Deep dive into envelope format, key rotation, and design decisions
+  </Card>
+</CardGroup>

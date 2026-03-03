@@ -1,0 +1,439 @@
+---
+title: Security Architecture
+description: Security features including zeroize, no unsafe code, and secure key material handling in QIMEM
+---
+
+QIMEM is designed with **security-first principles** enforced at the compiler and runtime levels.
+
+## Compiler-Enforced Security
+
+The library crate enforces two critical safety attributes:
+
+```rust
+#![deny(missing_docs)]
+#![deny(unsafe_code)]
+```
+
+Source: `src/lib.rs:1-2`
+
+### No Unsafe Code
+
+<Info>
+  **`#![deny(unsafe_code)]`** ensures QIMEM contains **zero unsafe Rust**, preventing memory safety bugs like use-after-free, double-free, and buffer overflows.
+</Info>
+
+From the README:
+
+> **Production considerations**
+> - `#![deny(missing_docs)]` and `#![deny(unsafe_code)]` are enabled.
+
+Source: `README.md:72`
+
+**Why this matters:**
+- Eliminates entire classes of vulnerabilities
+- Cryptographic libraries are high-value targets—memory safety is critical
+- Leverages Rust's ownership system for compile-time guarantees
+
+### Complete Documentation
+
+<Info>
+  **`#![deny(missing_docs)]`** requires every public item (functions, structs, enums, modules) to have documentation, reducing misuse and misunderstanding.
+</Info>
+
+## Key Material Protection
+
+QIMEM uses **`zeroize::Zeroizing`** to wrap all sensitive key material, ensuring cryptographic keys are securely erased from memory.
+
+### Zeroizing Wrapper
+
+```rust
+pub struct KeyMaterial {
+    pub key_id: Uuid,
+    /// Encryption key bytes.
+    pub material: Zeroizing<Vec<u8>>,
+    pub active: bool,
+}
+```
+
+Source: `src/keystore/mod.rs:32-40`
+
+**How `Zeroizing` works:**
+- Implements `Drop` trait to overwrite memory with zeros
+- Prevents key material from lingering in memory after use
+- Compiler cannot optimize away the zeroing (uses volatile writes)
+
+**All key material uses `Zeroizing`:**
+
+<CodeGroup>
+
+```rust Key Generation
+pub(crate) fn generate_key_material() -> Zeroizing<Vec<u8>> {
+    let mut key = vec![0_u8; 32];
+    OsRng.fill_bytes(&mut key);
+    Zeroizing::new(key)
+}
+```
+
+```rust InMemoryKeyStore
+fn get_key(&self, key_id: Uuid) -> Result<KeyMaterial> {
+    let keys = self.keys.read()?;
+    let stored = keys.get(&key_id)
+        .ok_or(QimemError::KeyNotFound(key_id))?;
+    Ok(KeyMaterial {
+        key_id,
+        material: zeroize::Zeroizing::new(stored.material.clone()),
+        active: stored.metadata.active,
+    })
+}
+```
+
+```rust PostgresKeyStore
+fn get_key(&self, key_id: Uuid) -> Result<KeyMaterial> {
+    let rt = tokio::runtime::Handle::current();
+    let row = rt.block_on(async {
+        sqlx::query("SELECT material, active FROM keys WHERE key_id=$1")
+            .bind(key_id)
+            .fetch_optional(&self.pool)
+            .await
+    })?;
+    let row = row.ok_or(QimemError::KeyNotFound(key_id))?;
+    let material: Vec<u8> = row.try_get("material")?;
+    Ok(KeyMaterial {
+        key_id,
+        material: zeroize::Zeroizing::new(material),
+        active: row.try_get("active")?,
+    })
+}
+```
+
+</CodeGroup>
+
+Sources: `src/keystore/mod.rs:52-56`, `src/keystore/memory.rs:47-58`, `src/keystore/postgres.rs:50-66`
+
+## No Key Logging
+
+From the README:
+
+> **Production considerations**
+> - No key bytes are logged.
+
+Source: `README.md:71`
+
+QIMEM **never** logs or prints key material:
+- Key bytes are not included in error messages
+- Debug implementations do not expose `material` field
+- Only `key_id` (UUID) is logged for traceability
+
+**Example error message:**
+```rust
+#[error("key not found: {0}")]
+KeyNotFound(uuid::Uuid),
+```
+
+Source: `src/error.rs:21-22`
+
+The UUID is safe to log; the actual key bytes are never exposed.
+
+## Cryptographic Primitives
+
+QIMEM uses **audited, standard cryptographic libraries**:
+
+### Algorithms
+
+<Tabs>
+  <Tab title="AES-256-GCM">
+    Default algorithm using the `aes-gcm` crate.
+    
+    ```rust
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    
+    let cipher = Aes256Gcm::new_from_slice(key.material.as_slice())?;
+    let ciphertext = cipher.encrypt(Nonce::from_slice(&nonce), plaintext)?;
+    ```
+    Source: `src/crypto.rs:3-4, 66-70`
+    
+    **Properties:**
+    - NIST-approved authenticated encryption
+    - 256-bit key, 96-bit nonce, 128-bit tag
+    - Hardware acceleration available (AES-NI)
+    - Algorithm ID: `1`
+  </Tab>
+  
+  <Tab title="ChaCha20-Poly1305">
+    Optional algorithm (requires `chacha` feature) using the `chacha20poly1305` crate.
+    
+    ```rust
+    #[cfg(feature = "chacha")]
+    use chacha20poly1305::ChaCha20Poly1305;
+    
+    let cipher = ChaCha20Poly1305::new_from_slice(key.material.as_slice())?;
+    let ciphertext = cipher.encrypt(
+        chacha20poly1305::Nonce::from_slice(&nonce),
+        plaintext
+    )?;
+    ```
+    Source: `src/crypto.rs:5-6, 74-78`
+    
+    **Properties:**
+    - RFC 8439 authenticated encryption
+    - 256-bit key, 96-bit nonce, 128-bit tag
+    - Constant-time (no cache timing attacks)
+    - Algorithm ID: `2`
+  </Tab>
+</Tabs>
+
+### Randomness
+
+**`OsRng`** from `rand_core` is used for all randomness:
+
+```rust
+use rand_core::{OsRng, RngCore};
+
+// Key generation
+let mut key = vec![0_u8; 32];
+OsRng.fill_bytes(&mut key);
+
+// Nonce generation
+let mut nonce = [0_u8; 12];
+OsRng.fill_bytes(&mut nonce);
+```
+
+Sources: `src/keystore/mod.rs:52-56`, `src/crypto.rs:61-62`
+
+**`OsRng` properties:**
+- Uses OS-provided CSPRNG (e.g., `/dev/urandom` on Linux, `BCryptGenRandom` on Windows)
+- Cryptographically secure
+- Non-blocking
+- Automatically reseeded
+
+## Active Key Enforcement
+
+The crypto engine **rejects encryption** with inactive keys:
+
+```rust
+pub fn encrypt(&self, key: &KeyMaterial, plaintext: &[u8]) -> Result<Envelope> {
+    if !key.active {
+        return Err(QimemError::KeyInactive(key.key_id));
+    }
+    // ...
+}
+```
+
+Source: `src/crypto.rs:57-60`
+
+<Warning>
+  Inactive keys can still **decrypt** old envelopes. Only **encryption** is blocked.
+</Warning>
+
+This prevents accidental use of rotated keys while maintaining backward compatibility.
+
+## Envelope Integrity
+
+All encrypted data includes a **128-bit authentication tag** that is verified during decryption:
+
+```rust
+pub fn decrypt(&self, key: &KeyMaterial, envelope: &Envelope) -> Result<Vec<u8>> {
+    if self.algorithm != envelope.algorithm {
+        return Err(QimemError::InvalidEnvelope("algorithm mismatch"));
+    }
+    let mut combined = envelope.ciphertext.clone();
+    combined.extend_from_slice(&envelope.tag);
+
+    match envelope.algorithm {
+        Algorithm::Aes256Gcm => {
+            let cipher = Aes256Gcm::new_from_slice(key.material.as_slice())?;
+            cipher.decrypt(Nonce::from_slice(&envelope.nonce), combined.as_ref())
+                .map_err(|_| QimemError::Decryption)
+        }
+        // ...
+    }
+}
+```
+
+Source: `src/crypto.rs:95-109`
+
+**Tag verification ensures:**
+- Ciphertext has not been modified
+- Tag was created with the correct key
+- Nonce and algorithm have not been tampered with
+
+From the README:
+
+> **Validation:**
+> - Tampered payloads fail with structured decryption errors
+
+Source: `README.md:29-30`
+
+## Nonce Uniqueness
+
+Every encryption generates a **fresh random nonce**:
+
+```rust
+let mut nonce = [0_u8; 12];
+OsRng.fill_bytes(&mut nonce);
+```
+
+Source: `src/crypto.rs:61-62`
+
+**Why randomness is safe for GCM/Poly1305:**
+- 96-bit nonce space = 2^96 possible values
+- Birthday bound: ~2^48 encryptions before collision risk
+- For 1 trillion (10^12) encryptions, collision probability ≈ 0.000004%
+
+<Info>
+  QIMEM does **not** use counter-based nonces because the API is stateless. Random nonces are cryptographically sound for GCM/Poly1305.
+</Info>
+
+## Storage Security
+
+### In-Memory Store
+
+```rust
+struct StoredKey {
+    metadata: KeyMetadata,
+    material: Vec<u8>,  // Raw bytes (zeroized on return)
+}
+```
+
+Source: `src/keystore/memory.rs:10-13`
+
+**Security considerations:**
+- Keys lost on restart (ephemeral)
+- Memory may be swapped to disk (use `mlock` in production)
+- Not suitable for production without additional hardening
+
+### Postgres Store
+
+**Schema:**
+```sql
+CREATE TABLE keys (
+    key_id UUID PRIMARY KEY,
+    lineage_id UUID NOT NULL,
+    version INT NOT NULL,
+    active BOOLEAN NOT NULL,
+    material BYTEA NOT NULL,  -- Encrypted key material
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+From the README:
+
+> **Production considerations**
+> - Use `stateful` mode with managed Postgres and encrypted disks.
+
+Source: `README.md:73`
+
+**Production hardening:**
+- Enable PostgreSQL **Transparent Data Encryption (TDE)**
+- Use **encrypted volumes** for Postgres data directory
+- Restrict database access with **network policies**
+- Enable **audit logging** for key access
+- Use **SSL/TLS** for database connections
+
+## Error Handling Security
+
+Errors expose minimal information to prevent side-channel attacks:
+
+```rust
+#[derive(Debug, Error)]
+pub enum QimemError {
+    #[error("encryption failed")]
+    Encryption,
+    #[error("decryption failed")]
+    Decryption,
+    // ...
+}
+```
+
+Source: `src/error.rs:26-31`
+
+**Both encryption and decryption failures return generic errors** without details about:
+- Why decryption failed (wrong key? tampered data?)
+- Why encryption failed (invalid key size? memory allocation?)
+
+This prevents attackers from using error messages to probe the system.
+
+## Production Deployment Checklist
+
+<Steps>
+  <Step title="Enable stateful mode">
+    Use `PostgresKeyStore` with `QIMEM_MODE=stateful` for key persistence.
+  </Step>
+  
+  <Step title="Encrypt database storage">
+    Enable Postgres TDE or use encrypted volumes (LUKS, dm-crypt, cloud KMS).
+  </Step>
+  
+  <Step title="Restrict network access">
+    Use firewalls/security groups to limit API access to trusted networks.
+  </Step>
+  
+  <Step title="Enable TLS">
+    Terminate TLS at a reverse proxy (nginx, Envoy) in front of qimem-api.
+  </Step>
+  
+  <Step title="Monitor for anomalies">
+    Log and alert on:
+    - High error rates (invalid envelopes, key not found)
+    - Unusual access patterns
+    - Failed decryption attempts
+  </Step>
+  
+  <Step title="Implement key rotation">
+    Establish a rotation schedule and automate via API or CLI.
+  </Step>
+  
+  <Step title="Audit dependencies">
+    Regularly audit Rust dependencies with `cargo audit`.
+  </Step>
+</Steps>
+
+## Threat Model
+
+### Protected Against
+
+<CardGroup cols={2}>
+  <Card title="Memory Disclosure" icon="memory">
+    Key material is zeroized when dropped, preventing recovery from memory dumps.
+  </Card>
+  
+  <Card title="Tampering" icon="user-secret">
+    AEAD tags detect any modification to ciphertext, nonce, or algorithm.
+  </Card>
+  
+  <Card title="Memory Safety Bugs" icon="bug">
+    No unsafe code eliminates use-after-free, buffer overflows, etc.
+  </Card>
+  
+  <Card title="Accidental Key Use" icon="ban">
+    Inactive keys are rejected for encryption, preventing misuse.
+  </Card>
+</CardGroup>
+
+### Not Protected Against
+
+<Warning>
+  QIMEM does **not** provide protection against:
+  
+  - **Key exfiltration via side channels** (cache timing, spectre/meltdown)
+  - **Compromised application code** (if attacker controls the process)
+  - **Database access attacks** (if attacker gains direct DB access)
+  - **Replay attacks** (QIMEM has no request authentication)
+  
+  These threats require additional layers (HSMs, SGX, application-level auth, etc.).
+</Warning>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Key Lifecycle" icon="rotate" href="/architecture/key-lifecycle">
+    How rotation and versioning work
+  </Card>
+  <Card title="Envelope Format" icon="envelope" href="/architecture/envelope-format">
+    How authentication tags are stored and verified
+  </Card>
+  <Card title="Deployment Guide" icon="rocket" href="/deployment/docker">
+    Production deployment with Docker and Postgres
+  </Card>
+</CardGroup>

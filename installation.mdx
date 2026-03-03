@@ -1,0 +1,349 @@
+---
+title: Installation
+description: Install QIMEM as an API server, CLI tool, or Rust library for your use case.
+---
+
+# Installation
+
+QIMEM can be installed in three ways depending on your use case:
+
+1. **Docker** (recommended for API server)
+2. **From source** (for CLI or development)
+3. **As a Rust library** (for embedding in your application)
+
+## Docker Installation (API Server)
+
+The fastest way to run the QIMEM API server with PostgreSQL backend.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/yourusername/qimem.git
+    cd qimem
+    ```
+  </Step>
+
+  <Step title="Configure environment">
+    Copy the example environment file:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    The `.env.example` contains:
+    ```bash
+    DATABASE_URL=postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+    QIMEM_MODE=stateful
+    QIMEM_BIND=0.0.0.0:8080
+    RUST_LOG=info
+    ```
+
+    <Info>
+    For production, update `DATABASE_URL` with your managed PostgreSQL credentials and enable SSL.
+    </Info>
+  </Step>
+
+  <Step title="Start with Docker Compose">
+    ```bash
+    docker compose up --build
+    ```
+
+    This launches:
+    - PostgreSQL 16 on port 5432
+    - QIMEM API on port 8080
+
+    Wait for the health check to pass:
+    ```bash
+    curl -fsS http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+  </Step>
+</Steps>
+
+### Docker Compose Configuration
+
+The `docker-compose.yml` includes:
+
+<CodeGroup>
+```yaml docker-compose.yml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: qimem
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qimem-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      QIMEM_MODE: stateful
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/qimem
+      QIMEM_BIND: 0.0.0.0:8080
+      RUST_LOG: info
+    ports:
+      - "8080:8080"
+```
+</CodeGroup>
+
+<Warning>
+The default configuration uses weak passwords for development. Always use strong credentials and SSL in production.
+</Warning>
+
+## Building from Source
+
+For CLI usage or development.
+
+### Prerequisites
+
+- Rust 1.70+ ([install via rustup](https://rustup.rs/))
+- PostgreSQL 14+ (for stateful mode only)
+
+### Build Steps
+
+<Steps>
+  <Step title="Clone and build">
+    ```bash
+    git clone https://github.com/yourusername/qimem.git
+    cd qimem
+    cargo build --release
+    ```
+
+    This produces:
+    - `./target/release/qimem` — CLI binary
+    - `./target/release/qimem-api` — API server binary
+  </Step>
+
+  <Step title="Run the CLI (in-memory mode)">
+    The CLI uses an in-memory key store by default:
+
+    ```bash
+    ./target/release/qimem keygen
+    ```
+
+    <Warning>
+    Keys are lost when the process exits. Use the API with PostgreSQL for persistence.
+    </Warning>
+  </Step>
+
+  <Step title="Run the API (stateful mode)">
+    Set up PostgreSQL and run migrations:
+
+    ```bash
+    # Set database URL
+    export DATABASE_URL="postgres://user:pass@localhost:5432/qimem"
+    
+    # Run with stateful feature
+    cargo run --release --features stateful --bin qimem-api
+    ```
+
+    The API listens on `http://localhost:8080` by default.
+  </Step>
+</Steps>
+
+### Build Features
+
+QIMEM supports optional Cargo features:
+
+| Feature | Description | Dependencies |
+|---------|-------------|-------------|
+| `stateful` | PostgreSQL-backed key store | `sqlx`, `postgres` |
+| `chacha` | ChaCha20-Poly1305 algorithm support | `chacha20poly1305` |
+
+**Build with all features:**
+```bash
+cargo build --release --all-features
+```
+
+**Build with specific features:**
+```bash
+cargo build --release --features "stateful,chacha"
+```
+
+## Installing as a Rust Library
+
+Embed QIMEM in your Rust application.
+
+### Add Dependency
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+qimem = { path = "../qimem" }
+# Or from crates.io (when published):
+# qimem = "0.1"
+
+# For PostgreSQL backend:
+qimem = { path = "../qimem", features = ["stateful"] }
+```
+
+### Basic Usage
+
+<CodeGroup>
+```rust Basic encryption/decryption
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore};
+use std::sync::Arc;
+
+fn main() -> Result<(), qimem::QimemError> {
+    // Create key store
+    let store: Arc<dyn KeyStore> = Arc::new(InMemoryKeyStore::default());
+    
+    // Generate key
+    let key_meta = store.create_key()?;
+    let key = store.get_key(key_meta.key_id)?;
+    
+    // Encrypt
+    let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+    let plaintext = b"secret data";
+    let envelope = engine.encrypt(&key, plaintext)?;
+    
+    // Serialize to base64
+    let binary = envelope.serialize_binary()?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&binary);
+    
+    // Decrypt
+    let decoded = base64::engine::general_purpose::STANDARD.decode(&encoded)
+        .map_err(|_| qimem::QimemError::InvalidEnvelope("bad base64"))?;
+    let envelope = qimem::Envelope::deserialize_binary(&decoded)?;
+    let decrypted = engine.decrypt(&key, &envelope)?;
+    
+    assert_eq!(plaintext, decrypted.as_slice());
+    Ok(())
+}
+```
+
+```rust With PostgreSQL backend
+use qimem::{Algorithm, CryptoEngine, PostgresKeyStore, KeyStore};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let database_url = "postgres://user:pass@localhost/qimem";
+    
+    // Create PostgreSQL-backed store
+    let store: Arc<dyn KeyStore> = Arc::new(
+        PostgresKeyStore::new(database_url).await?
+    );
+    
+    // Use same API as in-memory store
+    let key_meta = store.create_key()?;
+    let key = store.get_key(key_meta.key_id)?;
+    
+    let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+    let envelope = engine.encrypt(&key, b"data")?;
+    
+    Ok(())
+}
+```
+</CodeGroup>
+
+## Environment Variables
+
+The API server supports these environment variables:
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `QIMEM_MODE` | Deployment mode: `memory` or `stateful` | `memory` | No |
+| `QIMEM_BIND` | Bind address for HTTP server | `127.0.0.1:8080` | No |
+| `DATABASE_URL` | PostgreSQL connection string | — | Yes (stateful mode) |
+| `RUST_LOG` | Log level: `error`, `warn`, `info`, `debug`, `trace` | `info` | No |
+
+### Example Configuration
+
+<CodeGroup>
+```bash Development
+QIMEM_MODE=memory
+QIMEM_BIND=127.0.0.1:8080
+RUST_LOG=debug
+```
+
+```bash Production
+QIMEM_MODE=stateful
+QIMEM_BIND=0.0.0.0:8080
+DATABASE_URL=postgres://qimem_user:secure_password@db.example.com:5432/qimem?sslmode=require
+RUST_LOG=info
+```
+</CodeGroup>
+
+## Running Locally (Development)
+
+For quick local development without Docker:
+
+```bash
+# In-memory mode (no PostgreSQL required)
+cargo run --bin qimem-api
+```
+
+The API starts at `http://127.0.0.1:8080`.
+
+<Tip>
+Use in-memory mode for testing and local development. Keys are ephemeral and lost on restart.
+</Tip>
+
+## Verifying Installation
+
+Test your installation:
+
+<Steps>
+  <Step title="Check health endpoint">
+    ```bash
+    curl http://localhost:8080/health
+    ```
+    
+    Expected: `{"status":"ok"}`
+  </Step>
+
+  <Step title="Create a test key">
+    ```bash
+    curl -X POST http://localhost:8080/keys \
+      -H 'content-type: application/json' \
+      -d '{}'
+    ```
+    
+    Expected: `{"key_id":"<uuid>"}`
+  </Step>
+
+  <Step title="Encrypt test data">
+    ```bash
+    KEY_ID="<uuid-from-step-2>"
+    curl -X POST http://localhost:8080/encrypt \
+      -H 'content-type: application/json' \
+      -d "{\"key_id\":\"$KEY_ID\",\"input\":\"test\"}"
+    ```
+    
+    Expected: `{"envelope":"<base64-string>"}`
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Learn the API workflow with a complete example
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all endpoints and request/response formats
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Deep dive into environment variables and deployment modes
+  </Card>
+  
+  <Card title="Production Deployment" icon="server" href="/deployment/production">
+    Best practices for running QIMEM in production
+  </Card>
+</CardGroup>

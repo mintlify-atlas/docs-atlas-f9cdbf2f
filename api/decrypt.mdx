@@ -1,0 +1,92 @@
+---
+title: Decrypt Data
+description: Decrypt an envelope and retrieve the original plaintext
+---
+
+## Endpoint
+
+```
+POST /decrypt
+```
+
+Decrypts a base64-encoded envelope and returns the original plaintext. The envelope contains the key ID, so you don't need to specify it separately.
+
+## Request
+
+<ParamField path="input" type="string" required>
+  Base64-encoded envelope returned from the encrypt endpoint
+</ParamField>
+
+## Response
+
+<ResponseField name="plaintext" type="string" required>
+  The decrypted plaintext data
+</ResponseField>
+
+## Example
+
+```bash
+ENVELOPE="AQEAAFUOhADim0HUpxZEZlVEAAAMAACqpZqZmZmZmZmZmZmZ..."
+
+curl -X POST http://localhost:8080/decrypt \
+  -H 'Content-Type: application/json' \
+  -d "{\"input\":\"${ENVELOPE}\"}"
+```
+
+Response:
+
+```json
+{
+  "plaintext": "hello"
+}
+```
+
+## Error Responses
+
+### 400 Bad Request
+
+Returned when the envelope is invalid or cannot be decoded.
+
+```json
+{
+  "error": "invalid base64"
+}
+```
+
+```json
+{
+  "error": "invalid envelope"
+}
+```
+
+```json
+{
+  "error": "unsupported version: 2"
+}
+```
+
+```json
+{
+  "error": "unsupported algorithm"
+}
+```
+
+### 404 Not Found
+
+Returned when the key referenced in the envelope does not exist.
+
+```json
+{
+  "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when decryption fails (e.g., tampered envelope, authentication failure).
+
+```json
+{
+  "error": "decryption failed"
+}
+```

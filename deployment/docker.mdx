@@ -1,0 +1,231 @@
+---
+title: 'Docker Deployment'
+description: 'Deploy QIMEM using Docker and Docker Compose'
+---
+
+QIMEM provides official Docker images and Docker Compose configurations for easy deployment in containerized environments.
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/your-org/qimem.git
+    cd qimem
+    ```
+  </Step>
+
+  <Step title="Configure environment">
+    Copy the example environment file:
+    ```bash
+    cp .env.example .env
+    ```
+    Edit `.env` to configure your deployment mode and settings.
+  </Step>
+
+  <Step title="Start services">
+    ```bash
+    docker compose up --build
+    ```
+  </Step>
+
+  <Step title="Verify health">
+    ```bash
+    curl -fsS http://localhost:8080/health
+    ```
+  </Step>
+</Steps>
+
+## Docker Compose Configuration
+
+The `docker-compose.yml` defines three services:
+
+### PostgreSQL Database
+
+PostgreSQL 16 with health checks:
+
+```yaml
+postgres:
+  image: postgres:16
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: qimem
+  ports:
+    - "5432:5432"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+```
+
+### QIMEM API Service
+
+The main API server with automatic health checks:
+
+```yaml
+qimem-api:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    QIMEM_MODE: stateful
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+    QIMEM_BIND: 0.0.0.0:8080
+    RUST_LOG: info
+  ports:
+    - "8080:8080"
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+    interval: 10s
+    timeout: 3s
+    retries: 10
+```
+
+<Info>
+  The API service waits for PostgreSQL to be healthy before starting, ensuring proper initialization order.
+</Info>
+
+## Dockerfile
+
+QIMEM uses a multi-stage build for optimized image size:
+
+### Build Stage
+
+```dockerfile
+FROM rust:1.82-slim AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY migrations ./migrations
+RUN cargo build --release --bin qimem-api --features stateful && strip target/release/qimem-api
+```
+
+### Runtime Stage
+
+```dockerfile
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -u 10001 qimem
+WORKDIR /app
+COPY --from=builder /app/target/release/qimem-api /usr/local/bin/qimem-api
+COPY migrations ./migrations
+USER qimem
+EXPOSE 8080
+CMD ["qimem-api"]
+```
+
+<Tip>
+  The binary is stripped and runs as a non-root user (UID 10001) for security best practices.
+</Tip>
+
+## Docker Commands
+
+### Build and Run
+
+<CodeGroup>
+```bash Development
+# Build and start all services
+docker compose up --build
+
+# Run in detached mode
+docker compose up -d --build
+```
+
+```bash Production
+# Build production image
+docker build -t qimem-api:latest .
+
+# Run with production settings
+docker run -d \
+  -p 8080:8080 \
+  -e QIMEM_MODE=stateful \
+  -e DATABASE_URL="postgres://user:pass@host:5432/qimem" \
+  -e RUST_LOG=info \
+  qimem-api:latest
+```
+</CodeGroup>
+
+### View Logs
+
+```bash
+# Follow logs for all services
+docker compose logs -f
+
+# Follow logs for API only
+docker compose logs -f qimem-api
+
+# View last 100 lines
+docker compose logs --tail=100 qimem-api
+```
+
+### Stop and Clean Up
+
+```bash
+# Stop services
+docker compose down
+
+# Stop and remove volumes
+docker compose down -v
+
+# Remove images as well
+docker compose down --rmi all
+```
+
+## Health Checks
+
+Both PostgreSQL and the QIMEM API include health checks:
+
+**PostgreSQL**: Checks database readiness every 5 seconds
+**QIMEM API**: Checks `/health` endpoint every 10 seconds
+
+```bash
+# Check container health status
+docker compose ps
+
+# Manual health check
+curl -fsS http://localhost:8080/health
+```
+
+<Warning>
+  Ensure health checks pass before sending production traffic to the service.
+</Warning>
+
+## Development Container
+
+The compose file includes a development container for active development:
+
+```yaml
+devcontainer:
+  image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
+  tty: true
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/qimem?sslmode=disable
+    RUST_LOG: info
+  command: sleep infinity
+```
+
+This container provides a Rust development environment with access to the PostgreSQL database.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Configure environment variables
+  </Card>
+  <Card title="Stateful Mode" icon="database" href="/deployment/stateful-mode">
+    Set up PostgreSQL backend
+  </Card>
+  <Card title="Production" icon="rocket" href="/deployment/production">
+    Production deployment guide
+  </Card>
+</CardGroup>

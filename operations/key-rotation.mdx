@@ -1,0 +1,187 @@
+---
+title: Key Rotation
+description: Rotate encryption keys and manage key lineages in QIMEM
+---
+
+## Overview
+
+Key rotation creates a new active key while preserving old keys for decryption. QIMEM tracks key lineages to maintain the relationship between rotated keys.
+
+<Info>
+Rotating a key does **not** re-encrypt existing data. Old keys remain available for decryption of existing ciphertexts.
+</Info>
+
+## Key Rotation Workflow
+
+### 1. Rotate a Key
+
+Call the `/rotate` endpoint with the current key ID:
+
+```bash
+curl -X POST http://localhost:8080/rotate \
+  -H "Content-Type: application/json" \
+  -d '{"key_id": "550e8400-e29b-41d4-a716-446655440000"}'
+```
+
+### 2. Rotation Response
+
+```json
+{
+  "key_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "lineage_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version": 2,
+  "active": true
+}
+```
+
+<Accordion title="Understanding the response fields">
+- **key_id**: The new key's unique identifier (use this for encryption)
+- **lineage_id**: Shared identifier linking all rotated versions
+- **version**: Incremental version number (starts at 1, increments on rotation)
+- **active**: Always `true` for the new key
+</Accordion>
+
+### 3. Update Application Configuration
+
+Update your application to use the new `key_id` for all new encryption operations:
+
+```python
+# Before rotation
+key_id = "550e8400-e29b-41d4-a716-446655440000"
+
+# After rotation
+key_id = "7c9e6679-7425-40de-944b-e07fc1f90ae7"  # New key
+```
+
+<Warning>
+Failing to update to the new key ID means you'll continue encrypting with an inactive key. While decryption still works, this defeats the purpose of rotation.
+</Warning>
+
+## What Happens During Rotation
+
+### Stateless Mode (In-Memory)
+
+From `src/keystore/memory.rs:60-87`:
+
+1. The old key is marked as **inactive** (`active: false`)
+2. A new key ID is generated
+3. New cryptographic material is generated (32 random bytes)
+4. The new key inherits the **lineage_id** and increments the **version**
+5. The lineage map is updated to point to the new key
+
+### Stateful Mode (Postgres)
+
+From `src/keystore/postgres.rs:68-97`:
+
+1. A database transaction begins
+2. The old key's `lineage_id` and `version` are fetched
+3. The old key is marked inactive: `UPDATE keys SET active=false WHERE key_id=$1`
+4. A new key row is inserted with:
+   - New `key_id`
+   - Same `lineage_id` (preserves key family relationship)
+   - Incremented `version`
+   - `active=true`
+   - Fresh cryptographic material
+5. The transaction commits atomically
+
+<Info>
+Rotation in stateful mode is atomic. If the transaction fails, the old key remains active.
+</Info>
+
+## Handling Old Keys
+
+### Decryption Still Works
+
+Old keys remain in the keystore and can decrypt existing envelopes:
+
+```bash
+# Decrypt data encrypted with the old key
+curl -X POST http://localhost:8080/decrypt \
+  -H "Content-Type: application/json" \
+  -d '{"input": "<base64-envelope>"}'
+```
+
+The envelope contains the original `key_id`, so QIMEM automatically retrieves the correct key.
+
+### Inactive Key Behavior
+
+Attempting to **encrypt** with an inactive key returns an error:
+
+```bash
+# This will fail if the key was rotated
+curl -X POST http://localhost:8080/encrypt \
+  -H "Content-Type: application/json" \
+  -d '{"key_id": "550e8400-e29b-41d4-a716-446655440000", "input": "secret"}'
+```
+
+**Error response:**
+```json
+{
+  "error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+<Warning>
+QIMEM does not enforce that inactive keys cannot be used for encryption at the API level in all cases. Always use the latest key ID returned from rotation.
+</Warning>
+
+## Key Deletion
+
+QIMEM does not support key deletion. Once a key is created:
+
+- It remains in the keystore permanently
+- Rotated keys stay available for decryption
+- There is no API to remove keys
+
+<Accordion title="Why keys cannot be deleted">
+Deleting a key would make all data encrypted with that key **permanently unrecoverable**. QIMEM prioritizes data safety by keeping all keys accessible for decryption.
+
+If you need to revoke access:
+- Rotate to a new key
+- Re-encrypt sensitive data with the new key
+- Restrict access to the old key material in your keystore backend
+</Accordion>
+
+## Rotation Best Practices
+
+<Tip>
+**Recommended rotation schedule:**
+- Rotate keys every 90 days for compliance
+- Rotate immediately if a key is suspected to be compromised
+- Automate rotation using cron or scheduled jobs
+</Tip>
+
+### Automation Example
+
+```bash
+#!/bin/bash
+# rotate-key.sh
+
+CURRENT_KEY="550e8400-e29b-41d4-a716-446655440000"
+API_URL="http://localhost:8080"
+
+# Rotate the key
+RESPONSE=$(curl -s -X POST "$API_URL/rotate" \
+  -H "Content-Type: application/json" \
+  -d "{\"key_id\": \"$CURRENT_KEY\"}")
+
+# Extract new key_id
+NEW_KEY=$(echo "$RESPONSE" | jq -r '.key_id')
+
+echo "Rotated key: $NEW_KEY"
+echo "Update your application configuration with this key."
+```
+
+## Monitoring Rotation
+
+Track key rotation in your logs:
+
+```bash
+RUST_LOG=info ./qimem-api
+```
+
+Look for successful rotation operations and any errors during the process.
+
+<Info>
+For detailed error messages, see the [Troubleshooting](/operations/troubleshooting) guide.
+</Info>

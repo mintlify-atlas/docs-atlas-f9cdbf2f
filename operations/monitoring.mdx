@@ -1,0 +1,120 @@
+---
+title: Monitoring
+description: Configure logging, health checks, and observability for QIMEM
+---
+
+## Health Endpoint
+
+QIMEM provides a `/health` endpoint for uptime monitoring and load balancer health checks.
+
+### Request
+
+```bash
+curl http://localhost:8080/health
+```
+
+### Response
+
+```json
+{
+  "status": "ok"
+}
+```
+
+<Info>
+The health endpoint always returns HTTP 200 when the service is running. It does not check database connectivity in stateful mode.
+</Info>
+
+## Logging Configuration
+
+QIMEM uses the Rust `tracing` framework with environment-based filtering via the `RUST_LOG` variable.
+
+### Log Levels
+
+Set `RUST_LOG` to control verbosity:
+
+```bash
+# Error only
+RUST_LOG=error ./qimem-api
+
+# Info level (recommended for production)
+RUST_LOG=info ./qimem-api
+
+# Debug level
+RUST_LOG=debug ./qimem-api
+
+# Trace level (very verbose)
+RUST_LOG=trace ./qimem-api
+```
+
+### Module-Specific Logging
+
+```bash
+# Only log QIMEM errors, suppress dependencies
+RUST_LOG=qimem=error ./qimem-api
+
+# Info for QIMEM, warn for everything else
+RUST_LOG=warn,qimem=info ./qimem-api
+
+# Debug SQL queries in stateful mode
+RUST_LOG=sqlx=debug,qimem=info ./qimem-api
+```
+
+<Tip>
+For production deployments, use `RUST_LOG=info` to balance visibility and performance.
+</Tip>
+
+## Log Format
+
+Logs are output in structured format to stdout:
+
+```text
+2026-03-03T14:23:45.123456Z  INFO qimem_api: server starting bind=0.0.0.0:8080
+2026-03-03T14:23:45.234567Z  INFO qimem_api: connected to database
+```
+
+<Accordion title="Integrating with log aggregation systems">
+QIMEM outputs logs to stdout in a format compatible with:
+
+- **Docker**: Use `docker logs` or log drivers
+- **Kubernetes**: Logs appear in `kubectl logs`
+- **CloudWatch**: Capture stdout from ECS/Fargate tasks
+- **Datadog/Splunk**: Parse structured logs with timestamp filters
+
+For JSON logging, consider wrapping the binary with a log formatter.
+</Accordion>
+
+## Metrics and Observability
+
+QIMEM does not currently expose Prometheus metrics. Monitor the following:
+
+### Application Metrics
+
+- **Health check success rate**: Monitor `/health` endpoint
+- **Process uptime**: Track container/process restarts
+- **Response times**: Measure API latency at load balancer
+
+### Database Metrics (Stateful Mode)
+
+- **Connection pool**: Monitor Postgres connection count
+- **Query duration**: Enable `RUST_LOG=sqlx=debug` temporarily
+- **Table size**: Monitor `keys` table growth
+
+<Warning>
+In stateful mode, database connection failures will cause API requests to fail with 500 errors. Ensure your Postgres instance is monitored separately.
+</Warning>
+
+## Error Monitoring
+
+Monitor logs for these error patterns:
+
+```text
+"error":"key not found: <uuid>"
+"error":"key is inactive: <uuid>"
+"error":"database error: <details>"
+"error":"configuration failed: <details>"
+```
+
+<Info>
+See the [Troubleshooting](/operations/troubleshooting) guide for common error resolution steps.
+</Info>

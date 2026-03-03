@@ -1,0 +1,54 @@
+---
+title: Create Key
+description: Generate a new encryption key
+---
+
+## Endpoint
+
+```
+POST /keys
+```
+
+Creates a new encryption key in the keystore. The generated key is immediately active and can be used for encryption operations.
+
+## Request
+
+No request body required. Send an empty JSON object:
+
+```json
+{}
+```
+
+## Response
+
+<ResponseField name="key_id" type="string (UUID)" required>
+  Unique identifier for the created key
+</ResponseField>
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/keys \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+Response:
+
+```json
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+## Error Responses
+
+### 500 Internal Server Error
+
+Returned when the keystore cannot create a new key.
+
+```json
+{
+  "error": "keystore error message"
+}
+```

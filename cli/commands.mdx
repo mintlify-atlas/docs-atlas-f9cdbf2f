@@ -1,0 +1,322 @@
+---
+title: "CLI Commands"
+description: "Complete reference for all QIMEM CLI commands including keygen, encrypt, decrypt, and rotate"
+---
+
+The QIMEM CLI provides four core commands for managing encryption keys and data.
+
+## keygen
+
+Generate a new 256-bit encryption key and return its metadata.
+
+### Usage
+
+```bash
+qimem keygen
+```
+
+### Arguments
+
+This command takes no arguments.
+
+### Response
+
+Returns JSON with key metadata:
+
+```json
+{
+  "key_id": "550e8400-e29b-41d4-a716-446655440000",
+  "lineage_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version": 1,
+  "active": true
+}
+```
+
+<ResponseField name="key_id" type="string" required>
+  Unique identifier for this key (UUID format)
+</ResponseField>
+
+<ResponseField name="lineage_id" type="string" required>
+  Identifier for the key lineage (UUID format). All rotated versions share the same lineage_id
+</ResponseField>
+
+<ResponseField name="version" type="integer" required>
+  Key rotation version, starts at 1
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Whether this key is active for encryption operations
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash Terminal
+$ qimem keygen
+{"key_id":"550e8400-e29b-41d4-a716-446655440000","lineage_id":"550e8400-e29b-41d4-a716-446655440000","version":1,"active":true}
+```
+
+</CodeGroup>
+
+---
+
+## encrypt
+
+Encrypt plaintext data using a specified key and return a base64-encoded envelope.
+
+### Usage
+
+```bash
+qimem encrypt --key-id <KEY_ID> --input <PLAINTEXT>
+```
+
+### Arguments
+
+<ParamField path="key-id" type="UUID" required>
+  The UUID of the encryption key to use. Must be an active key.
+</ParamField>
+
+<ParamField path="input" type="string" required>
+  The plaintext data to encrypt
+</ParamField>
+
+### Response
+
+Returns JSON with a base64-encoded envelope:
+
+```json
+{
+  "envelope": "AQGLxQRQDqQOKR1EdqcUZkVUQACg8F2vXh3..."
+}
+```
+
+<ResponseField name="envelope" type="string" required>
+  Base64-encoded binary envelope containing the encrypted data, metadata, and authentication tag
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash Terminal
+$ qimem encrypt --key-id 550e8400-e29b-41d4-a716-446655440000 --input "Hello, World!"
+{"envelope":"AQGLxQRQDqQOKR1EdqcUZkVUQACg8F2vXh3Y5kJ9mZqB3fK8L..."}
+```
+
+</CodeGroup>
+
+### Error Cases
+
+<Tabs>
+  <Tab title="Key Not Found">
+    ```json
+    {
+      "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+  </Tab>
+  <Tab title="Key Inactive">
+    ```json
+    {
+      "error": "key is inactive: 550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## decrypt
+
+Decrypt a base64-encoded envelope and return the plaintext.
+
+### Usage
+
+```bash
+qimem decrypt --input <ENVELOPE>
+```
+
+### Arguments
+
+<ParamField path="input" type="string" required>
+  Base64-encoded envelope to decrypt
+</ParamField>
+
+### Response
+
+Returns JSON with the decrypted plaintext:
+
+```json
+{
+  "plaintext": "Hello, World!"
+}
+```
+
+<ResponseField name="plaintext" type="string" required>
+  The decrypted data as a UTF-8 string
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash Terminal
+$ qimem decrypt --input "AQGLxQRQDqQOKR1EdqcUZkVUQACg8F2vXh3Y5kJ9mZqB3fK8L..."
+{"plaintext":"Hello, World!"}
+```
+
+</CodeGroup>
+
+### Process
+
+The decrypt command performs the following steps:
+
+1. Decodes the base64-encoded input
+2. Deserializes the binary envelope
+3. Extracts the `key_id` from the envelope metadata
+4. Retrieves the key material from the key store
+5. Decrypts the ciphertext using AES-256-GCM
+6. Validates the authentication tag
+7. Converts the plaintext bytes to a UTF-8 string
+
+### Error Cases
+
+<Tabs>
+  <Tab title="Invalid Base64">
+    ```json
+    {
+      "error": "invalid envelope: invalid base64"
+    }
+    ```
+  </Tab>
+  <Tab title="Invalid Envelope">
+    ```json
+    {
+      "error": "invalid envelope: malformed structure"
+    }
+    ```
+  </Tab>
+  <Tab title="Decryption Failed">
+    ```json
+    {
+      "error": "decryption failed"
+    }
+    ```
+    This typically indicates authentication tag validation failed or the envelope was tampered with.
+  </Tab>
+  <Tab title="Key Not Found">
+    ```json
+    {
+      "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## rotate
+
+Rotate an existing key to a new version. Creates a new key with an incremented version number in the same lineage.
+
+### Usage
+
+```bash
+qimem rotate --key-id <KEY_ID>
+```
+
+### Arguments
+
+<ParamField path="key-id" type="UUID" required>
+  The UUID of the key to rotate. Can be any version in the lineage.
+</ParamField>
+
+### Response
+
+Returns JSON with the new key version metadata:
+
+```json
+{
+  "key_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "lineage_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version": 2,
+  "active": true
+}
+```
+
+<ResponseField name="key_id" type="string" required>
+  Unique identifier for the new key version (different from the original key_id)
+</ResponseField>
+
+<ResponseField name="lineage_id" type="string" required>
+  Lineage identifier (same as the original key)
+</ResponseField>
+
+<ResponseField name="version" type="integer" required>
+  Incremented version number
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Always `true` for newly rotated keys
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash Terminal
+$ qimem rotate --key-id 550e8400-e29b-41d4-a716-446655440000
+{"key_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","lineage_id":"550e8400-e29b-41d4-a716-446655440000","version":2,"active":true}
+```
+
+</CodeGroup>
+
+### Behavior
+
+Key rotation:
+- Generates a new 256-bit encryption key
+- Increments the version number
+- Preserves the lineage_id
+- Marks the new version as active
+- Previous versions remain available for decryption
+
+<Note>
+  In the CLI's in-memory key store, rotated keys are lost when the process exits. Use the API server with PostgreSQL for persistent key rotation.
+</Note>
+
+### Error Cases
+
+<Tabs>
+  <Tab title="Key Not Found">
+    ```json
+    {
+      "error": "key not found: 550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Exit Codes
+
+The CLI uses standard exit codes:
+
+- `0` - Success
+- `1` - Error (check JSON output for details)
+
+## Shell Integration
+
+Parse JSON responses using `jq`:
+
+```bash
+# Extract just the key_id
+KEY_ID=$(qimem keygen | jq -r '.key_id')
+
+# Encrypt and store envelope
+ENVELOPE=$(qimem encrypt --key-id $KEY_ID --input "secret" | jq -r '.envelope')
+
+# Decrypt and extract plaintext
+qimem decrypt --input $ENVELOPE | jq -r '.plaintext'
+```

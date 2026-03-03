@@ -1,0 +1,60 @@
+---
+title: HTTP API Overview
+description: Introduction to the QIMEM HTTP API, base URL, and authentication
+---
+
+The QIMEM HTTP API provides endpoints for key lifecycle management and encryption operations.
+
+## Base URL
+
+The default base URL for local development is:
+
+```
+http://localhost:8080
+```
+
+Configure the server address using environment variables (see deployment documentation).
+
+## Authentication
+
+The current version does not include built-in authentication. Deploy behind a reverse proxy or API gateway that handles authentication and authorization for production use.
+
+## Request Format
+
+All POST endpoints accept JSON request bodies with `Content-Type: application/json`.
+
+## Response Format
+
+Successful responses return JSON with a `200 OK` status code.
+
+Error responses return JSON with an appropriate status code:
+
+```json
+{
+  "error": "error message"
+}
+```
+
+## Error Status Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| `400` | Bad Request - Invalid input, unsupported version/algorithm, or inactive key |
+| `404` | Not Found - Key does not exist |
+| `500` | Internal Server Error - Server-side error |
+
+## Health Check
+
+Check API availability:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Response:
+
+```json
+{
+  "status": "ok"
+}
+```

@@ -1,0 +1,316 @@
+---
+title: 'Stateful Mode'
+description: 'PostgreSQL backend setup and database migrations for persistent key storage'
+---
+
+Stateful mode enables persistent key storage using PostgreSQL, allowing keys to survive application restarts and enabling horizontal scaling.
+
+## Overview
+
+QIMEM supports two runtime modes:
+
+<CardGroup cols={2}>
+  <Card title="Stateless" icon="memory">
+    **In-memory storage**
+    
+    Keys stored in memory only. Data lost on restart. Suitable for development and testing.
+  </Card>
+  
+  <Card title="Stateful" icon="database">
+    **PostgreSQL storage**
+    
+    Keys persisted to database. Survives restarts. Required for production.
+  </Card>
+</CardGroup>
+
+The mode is determined by the `QIMEM_MODE` environment variable:
+
+```rust
+pub enum Mode {
+    /// In-memory keys.
+    Stateless,
+    /// Postgres-backed keys.
+    Stateful,
+}
+```
+
+## Prerequisites
+
+<Steps>
+  <Step title="PostgreSQL 16+">
+    Ensure you have PostgreSQL 16 or later installed and running.
+    
+    ```bash
+    # Check PostgreSQL version
+    psql --version
+    ```
+  </Step>
+
+  <Step title="Database credentials">
+    Obtain or create database credentials with CREATE and ALTER permissions for running migrations.
+  </Step>
+
+  <Step title="Network access">
+    Ensure the QIMEM API can reach the PostgreSQL instance on the configured port (default 5432).
+  </Step>
+</Steps>
+
+## Database Setup
+
+### Create Database
+
+```sql
+CREATE DATABASE qimem;
+CREATE USER qimem_user WITH PASSWORD 'secure_password';
+GRANT ALL PRIVILEGES ON DATABASE qimem TO qimem_user;
+```
+
+<Warning>
+  Use strong, randomly generated passwords for production deployments. Never commit credentials to version control.
+</Warning>
+
+### Using Docker Compose
+
+The included `docker-compose.yml` automatically sets up PostgreSQL:
+
+```yaml
+postgres:
+  image: postgres:16
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: qimem
+  ports:
+    - "5432:5432"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+```
+
+```bash
+# Start PostgreSQL
+docker compose up -d postgres
+
+# Verify it's healthy
+docker compose ps postgres
+```
+
+## Configuration
+
+Set the required environment variables:
+
+```bash .env
+QIMEM_MODE=stateful
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/qimem?sslmode=disable
+```
+
+<Info>
+  The `DATABASE_URL` must be provided when `QIMEM_MODE=stateful`, or the application will fail to start.
+</Info>
+
+### Connection String Format
+
+```
+postgres://[user]:[password]@[host]:[port]/[database][?options]
+```
+
+<CodeGroup>
+```bash Development
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/qimem?sslmode=disable
+```
+
+```bash Production
+DATABASE_URL=postgres://qimem_user:secure_password@db.prod.example.com:5432/qimem?sslmode=require
+```
+
+```bash With Pool Settings
+DATABASE_URL=postgres://qimem_user:secure_password@db.prod.example.com:5432/qimem?sslmode=require&pool_max_conns=20
+```
+</CodeGroup>
+
+## Migrations
+
+QIMEM uses `sqlx` migrations stored in the `migrations/` directory. Migrations are automatically applied at application startup when the `stateful` feature is enabled.
+
+### Migration Files
+
+Migrations are included in the Docker image:
+
+```dockerfile
+COPY migrations ./migrations
+```
+
+And copied to the runtime image:
+
+```dockerfile
+COPY --from=builder /app/target/release/qimem-api /usr/local/bin/qimem-api
+COPY migrations ./migrations
+```
+
+### Automatic Migration
+
+When the API starts in stateful mode, it automatically:
+
+1. Connects to the database using `DATABASE_URL`
+2. Checks for pending migrations
+3. Applies all pending migrations in order
+4. Starts accepting requests
+
+```bash
+# Migrations run automatically on startup
+cargo run --bin qimem-api --features stateful
+```
+
+<Tip>
+  No manual migration steps are required. The application handles database schema initialization and updates automatically.
+</Tip>
+
+## Schema
+
+The stateful backend stores keys with:
+
+- **Key ID**: UUID primary key
+- **Key material**: Encrypted key bytes (wrapped with `zeroize::Zeroizing`)
+- **Algorithm**: Encryption algorithm identifier
+- **Active status**: Whether the key can be used for encryption
+- **Metadata**: Creation time, rotation history
+
+<Info>
+  Key material is never logged and is always wrapped with `zeroize::Zeroizing` for secure memory handling.
+</Info>
+
+## Key Lifecycle in Stateful Mode
+
+### Key Creation
+
+Keys are stored in PostgreSQL with active status:
+
+```bash
+# Create a new key
+curl -X POST http://localhost:8080/keys \
+  -H 'content-type: application/json' \
+  -d '{}'
+
+# Response: {"key_id":"<uuid>"}
+```
+
+The key is immediately available for encryption operations and persists across restarts.
+
+### Key Rotation
+
+Rotation creates a new active key and deactivates the old one:
+
+```bash
+# Rotate a key
+curl -X POST http://localhost:8080/keys/{key_id}/rotate \
+  -H 'content-type: application/json'
+
+# Response: {"new_key_id":"<uuid>"}
+```
+
+**Behavior**:
+- New key becomes active for encryption
+- Old key remains available for decryption
+- Old key cannot be used for new encryption
+- Both keys persist in the database
+
+<Warning>
+  Inactive keys are rejected for encryption operations but remain available for decrypting existing ciphertexts.
+</Warning>
+
+## Production Considerations
+
+### Database Security
+
+<Steps>
+  <Step title="Enable SSL/TLS">
+    Always use `sslmode=require` for production connections:
+    
+    ```bash
+    DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=require
+    ```
+  </Step>
+
+  <Step title="Encrypt at rest">
+    Enable PostgreSQL transparent data encryption (TDE) or use encrypted EBS volumes on AWS, encrypted disks on GCP/Azure.
+  </Step>
+
+  <Step title="Restrict access">
+    Use firewall rules and security groups to limit database access to only the QIMEM API servers.
+  </Step>
+
+  <Step title="Use managed services">
+    Prefer managed PostgreSQL services (AWS RDS, GCP Cloud SQL, Azure Database) with automated backups and maintenance.
+  </Step>
+</Steps>
+
+### Backup and Recovery
+
+```bash
+# Backup database
+pg_dump -h db.example.com -U qimem_user qimem > qimem_backup.sql
+
+# Restore database
+psql -h db.example.com -U qimem_user qimem < qimem_backup.sql
+```
+
+<Warning>
+  Back up your database regularly. Loss of the database means loss of all encryption keys and inability to decrypt existing data.
+</Warning>
+
+### Connection Pooling
+
+`sqlx` provides built-in connection pooling. Configure pool size via connection string:
+
+```bash
+DATABASE_URL=postgres://user:pass@db.example.com:5432/qimem?sslmode=require&pool_max_conns=20
+```
+
+<Tip>
+  Start with a pool size of 10-20 connections and adjust based on load testing and database connection limits.
+</Tip>
+
+## Troubleshooting
+
+### Configuration Error: DATABASE_URL Required
+
+```
+QimemError::Config("DATABASE_URL is required for stateful mode")
+```
+
+**Solution**: Set the `DATABASE_URL` environment variable when using `QIMEM_MODE=stateful`.
+
+### Connection Refused
+
+```
+Error: Connection refused (os error 111)
+```
+
+**Solution**: 
+- Verify PostgreSQL is running: `docker compose ps postgres`
+- Check the connection string host and port
+- Ensure firewall rules allow connections
+
+### Migration Failed
+
+```
+Error: Migration failed: ...
+```
+
+**Solution**:
+- Ensure the database user has CREATE and ALTER permissions
+- Check PostgreSQL logs for detailed error messages
+- Verify the `migrations/` directory is accessible
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Production Guide" icon="rocket" href="/deployment/production">
+    Production deployment best practices
+  </Card>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Full configuration reference
+  </Card>
+</CardGroup>

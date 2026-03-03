@@ -1,0 +1,176 @@
+---
+title: CryptoEngine
+description: Core encryption and decryption engine for QIMEM
+---
+
+## Overview
+
+The `CryptoEngine` is the primary interface for encrypting and decrypting data using QIMEM. It wraps symmetric encryption algorithms and produces deterministic `Envelope` structures.
+
+## Struct Definition
+
+```rust
+pub struct CryptoEngine {
+    algorithm: Algorithm,
+}
+```
+
+The `CryptoEngine` is initialized with a specific `Algorithm` and performs all cryptographic operations using that algorithm.
+
+## Methods
+
+### new
+
+Creates a new `CryptoEngine` instance.
+
+```rust
+pub fn new(algorithm: Algorithm) -> Self
+```
+
+<ParamField path="algorithm" type="Algorithm" required>
+  The symmetric encryption algorithm to use (e.g., `Aes256Gcm` or `ChaCha20Poly1305`)
+</ParamField>
+
+**Returns:** A new `CryptoEngine` instance configured with the specified algorithm.
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, CryptoEngine};
+
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+```
+
+### encrypt
+
+Encrypts plaintext into an `Envelope` using the provided key material.
+
+```rust
+pub fn encrypt(&self, key: &KeyMaterial, plaintext: &[u8]) -> Result<Envelope>
+```
+
+<ParamField path="key" type="&KeyMaterial" required>
+  The key material to use for encryption. The key must be active.
+</ParamField>
+
+<ParamField path="plaintext" type="&[u8]" required>
+  The data to encrypt as a byte slice.
+</ParamField>
+
+**Returns:** `Result<Envelope>` containing the encrypted data with metadata.
+
+**Errors:**
+- `QimemError::KeyInactive` if the key is not active for encryption
+- `QimemError::Encryption` if the encryption operation fails
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore};
+
+let store = InMemoryKeyStore::default();
+let key_meta = store.create_key().expect("create key");
+let key_material = store.get_key(key_meta.key_id).expect("get key");
+
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+let envelope = engine.encrypt(&key_material, b"hello world").expect("encrypt");
+```
+
+### decrypt
+
+Decrypts an `Envelope` using the provided key material.
+
+```rust
+pub fn decrypt(&self, key: &KeyMaterial, envelope: &Envelope) -> Result<Vec<u8>>
+```
+
+<ParamField path="key" type="&KeyMaterial" required>
+  The key material to use for decryption. Must match the key used for encryption.
+</ParamField>
+
+<ParamField path="envelope" type="&Envelope" required>
+  The encrypted envelope to decrypt.
+</ParamField>
+
+**Returns:** `Result<Vec<u8>>` containing the decrypted plaintext bytes.
+
+**Errors:**
+- `QimemError::Decryption` if the decryption fails (wrong key, tampered data, etc.)
+- `QimemError::InvalidEnvelope` if the envelope algorithm doesn't match the engine's algorithm
+
+**Example:**
+
+```rust
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore};
+
+let store = InMemoryKeyStore::default();
+let key_meta = store.create_key().expect("create key");
+let key_material = store.get_key(key_meta.key_id).expect("get key");
+
+let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+let envelope = engine.encrypt(&key_material, b"hello world").expect("encrypt");
+let plaintext = engine.decrypt(&key_material, &envelope).expect("decrypt");
+
+assert_eq!(plaintext, b"hello world");
+```
+
+## Algorithm Enum
+
+The `Algorithm` enum identifies which symmetric encryption algorithm to use.
+
+```rust
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Algorithm {
+    /// AES-256-GCM
+    Aes256Gcm,
+    /// ChaCha20-Poly1305 (requires "chacha" feature)
+    #[cfg(feature = "chacha")]
+    ChaCha20Poly1305,
+}
+```
+
+### Variants
+
+<ParamField path="Aes256Gcm" type="variant">
+  AES-256-GCM authenticated encryption. Always available.
+</ParamField>
+
+<ParamField path="ChaCha20Poly1305" type="variant">
+  ChaCha20-Poly1305 authenticated encryption. Requires the `chacha` feature flag.
+</ParamField>
+
+## Thread Safety
+
+`CryptoEngine` is `Clone`, `Send`, and `Sync`, making it safe to use across threads. Each encryption operation generates a unique random nonce, ensuring concurrent operations produce different ciphertexts.
+
+**Example:**
+
+```rust
+use std::sync::Arc;
+use qimem::{Algorithm, CryptoEngine, InMemoryKeyStore, KeyStore};
+
+let store = Arc::new(InMemoryKeyStore::default());
+let key_meta = store.create_key().expect("key");
+let key_material = store.get_key(key_meta.key_id).expect("material");
+
+let mut handles = Vec::new();
+for _ in 0..16 {
+    let key = key_material.clone();
+    handles.push(std::thread::spawn(move || {
+        let engine = CryptoEngine::new(Algorithm::Aes256Gcm);
+        engine.encrypt(&key, b"payload").is_ok()
+    }));
+}
+
+for handle in handles {
+    assert!(handle.join().expect("join"));
+}
+```
+
+## Security Notes
+
+- Each encryption operation uses a cryptographically secure random 12-byte nonce from `OsRng`
+- The engine automatically appends a 16-byte authentication tag to all encrypted data
+- Tampering with any part of the envelope (ciphertext, tag, nonce) will cause decryption to fail
+- Inactive keys cannot be used for encryption but can still decrypt old envelopes
